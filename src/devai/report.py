@@ -1,6 +1,6 @@
 """Render a ProjectInfo as human-readable terminal text."""
 
-from devai.models import ProjectInfo
+from devai.models import Manifest, ProjectInfo, TestSummary
 
 SEPARATOR = "─" * 36
 
@@ -17,6 +17,18 @@ def format_project_info(info: ProjectInfo) -> str:
         "",
         "Languages:",
         *format_languages(info),
+        "",
+        "Frameworks:",
+        f"  {', '.join(info.frameworks) or 'none detected'}",
+        "",
+        "Dependencies:",
+        *format_manifests(info),
+        "",
+        "Tests:",
+        f"  {describe_tests(info.tests)}",
+        "",
+        "Configuration:",
+        *(f"  {path}" for path in info.config_files or ["none detected"]),
         "",
         "Structure:",
         *format_structure(info),
@@ -36,6 +48,35 @@ def format_languages(info: ProjectInfo) -> list[str]:
         for language in info.languages
     ]
     return format_rows(rows)
+
+
+def format_manifests(info: ProjectInfo) -> list[str]:
+    if not info.manifests:
+        return ["  none detected"]
+
+    width = max(len(str(manifest.path)) for manifest in info.manifests)
+    return [
+        f"  {str(manifest.path):<{width}}  {describe_manifest(manifest)}"
+        for manifest in info.manifests
+    ]
+
+
+def describe_manifest(manifest: Manifest) -> str:
+    if not manifest.parsed:
+        return "found, not parsed"
+    dev = sum(1 for dependency in manifest.dependencies if dependency.dev)
+    runtime = len(manifest.dependencies) - dev
+    return f"{runtime} runtime, {dev} dev"
+
+
+def describe_tests(tests: TestSummary) -> str:
+    frameworks = ", ".join(tests.frameworks)
+    if tests.files:
+        count = f"{tests.files} {plural(tests.files, 'file')}"
+        return f"{count} ({frameworks})" if frameworks else count
+    if frameworks:
+        return f"no test files found ({frameworks} in dependencies)"
+    return "none detected"
 
 
 def format_structure(info: ProjectInfo) -> list[str]:

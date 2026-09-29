@@ -2,7 +2,7 @@ import pytest
 from conftest import make_files
 
 from devai.analyzer import analyze_project
-from devai.models import DirectoryStat, FileSource, LanguageStat
+from devai.models import DirectoryStat, FileSource, LanguageStat, TestSummary
 
 
 def test_builds_project_info(tmp_path):
@@ -68,3 +68,37 @@ def test_rejects_file_path(tmp_path):
 
     with pytest.raises(NotADirectoryError):
         analyze_project(tmp_path / "file.txt")
+
+
+def test_detects_stack(tmp_path):
+    make_files(
+        tmp_path,
+        "package.json",
+        "src/App.jsx",
+        "src/App.test.jsx",
+        "vite.config.js",
+        ".env.example",
+    )
+    (tmp_path / "package.json").write_text(
+        '{"dependencies": {"react": "19"}, "devDependencies": {"vitest": "3"}}'
+    )
+
+    info = analyze_project(tmp_path)
+
+    assert info.frameworks == ("React",)
+    assert [str(manifest.path) for manifest in info.manifests] == ["package.json"]
+    assert info.tests == TestSummary(1, ("Vitest",))
+    assert [str(path) for path in info.config_files] == [
+        ".env.example",
+        "vite.config.js",
+    ]
+
+
+def test_broken_manifest_is_reported_as_warning(tmp_path):
+    make_files(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text("{not json")
+
+    info = analyze_project(tmp_path)
+
+    assert info.manifests[0].parsed is False
+    assert info.warnings[0].startswith("Could not parse package.json")

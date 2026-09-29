@@ -104,3 +104,22 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Decision:** Map extensions to languages with a plain dictionary and count files per language. Data and docs formats are excluded. `.jsx`/`.tsx` count as JavaScript/TypeScript.
 - **Why:** Simple, predictable and fast, with no need to read file contents.
 - **Alternatives:** Count bytes or lines, as GitHub Linguist does. That is more representative, but lines require reading every file, and extensions are ambiguous in some cases (`.h`). Content-based detection is a possible later improvement.
+
+## D018: Phase 2b split into stack detection (2b) and findings (2c)
+
+- **Decision:** 2b only describes the stack. Judging it (findings, severities, secret scanning, JSON output, exit codes) moves to 2c.
+- **Why:** Secret scanning is the first step that reads source file contents, a privacy boundary that deserves its own phase and decisions. Smaller phases are also easier to review.
+- **Consequence:** In 2b the only files opened are dependency manifests (and `.gitignore`, from 2a). Parse warnings report the error position, never file contents.
+
+## D019: PEP 508 names extracted with a regex, not `packaging`
+
+- **Decision:** Read the leading name of each requirement with a small regex and normalize it per PEP 503 (`Flask_SQLAlchemy` → `flask-sqlalchemy`). URL-only and local-path requirements are skipped.
+- **Why:** Detection only needs the package name, not versions or markers. That avoids a dependency.
+- **Alternatives:** `packaging.requirements.Requirement` (a complete PEP 508 parser, one more dependency). Revisit if a real project exposes a case the regex gets wrong.
+
+## D020: Frameworks and test files by simple, explicit rules
+
+- **Decision:** Frameworks come from a per-ecosystem table of dependency names; test files from naming conventions and test directories, counting source files only; config files from a list of well-known names.
+- **Why:** Predictable, easy to test and extend with one line. The tables are per ecosystem, so an npm name never matches a Python package.
+- **Alternatives:** Content-based detection (imports, config file contents). More accurate, but it needs to read source code, which is out of scope for 2b (D018).
+- **Known limits:** Poetry's `[tool.poetry.dependencies]` isn't read. `unittest`-only Python projects show test files but no test framework, because unittest is in the standard library.

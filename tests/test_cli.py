@@ -2,6 +2,7 @@ import subprocess
 import sys
 
 import pytest
+from conftest import make_files
 
 from devai import __version__
 from devai.cli import EXIT_BAD_PATH, EXIT_OK, EXIT_USAGE, main
@@ -30,13 +31,19 @@ def test_no_command_prints_help(capsys):
 
 def test_analyze_prints_project_info(tmp_path, capsys):
     project = tmp_path / "demo"
-    project.mkdir()
-    (project / "README.md").write_text("# Demo")
-    (project / "main.py").write_text("print('hi')")
-
-    (project / "src").mkdir()
-    for name in ["app.py", "util.py", "index.js"]:
-        (project / "src" / name).write_text("x")
+    make_files(
+        project,
+        "README.md",
+        "pyproject.toml",
+        "src/app.py",
+        "src/index.js",
+        "tests/test_app.py",
+        "Dockerfile",
+    )
+    (project / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["Flask"]\n'
+        '[project.optional-dependencies]\ndev = ["pytest"]\n'
+    )
 
     assert main(["analyze", str(project)]) == EXIT_OK
 
@@ -45,17 +52,30 @@ def test_analyze_prints_project_info(tmp_path, capsys):
         "────────────────────────────────────\n"
         "Project:        demo\n"
         f"Path:           {project.resolve()}\n"
-        "Files:          5 (filesystem)\n"
+        "Files:          6 (filesystem)\n"
         "Git repository: no\n"
         "README:         yes\n"
         "\n"
         "Languages:\n"
-        "  Python      3 files   75%\n"
-        "  JavaScript  1 file    25%\n"
+        "  Python      2 files   67%\n"
+        "  JavaScript  1 file    33%\n"
+        "\n"
+        "Frameworks:\n"
+        "  Flask\n"
+        "\n"
+        "Dependencies:\n"
+        "  pyproject.toml  1 runtime, 1 dev\n"
+        "\n"
+        "Tests:\n"
+        "  1 file (pytest)\n"
+        "\n"
+        "Configuration:\n"
+        "  Dockerfile\n"
         "\n"
         "Structure:\n"
-        "  src/    3 files\n"
-        "  (root)  2 files\n"
+        "  src/    2 files\n"
+        "  tests/  1 file\n"
+        "  (root)  3 files\n"
     )
 
 
@@ -64,7 +84,14 @@ def test_analyze_empty_directory(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "Files:          0 (filesystem)" in out
-    assert "Languages:\n  none detected" in out
+    for section in [
+        "Languages",
+        "Frameworks",
+        "Dependencies",
+        "Tests",
+        "Configuration",
+    ]:
+        assert f"{section}:\n  none detected" in out
     assert "Structure:\n  empty" in out
 
 
