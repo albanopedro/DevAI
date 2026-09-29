@@ -52,7 +52,9 @@ def test_no_git_repository(tmp_path):
     assert scan_project(tmp_path).has_git is False
 
 
-@pytest.mark.parametrize("filename", ["README.md", "readme.rst", "Readme", "README.txt"])
+@pytest.mark.parametrize(
+    "filename", ["README.md", "readme.rst", "Readme", "README.txt"]
+)
 def test_detects_readme_variants(tmp_path, filename):
     make_files(tmp_path, filename)
 

@@ -73,3 +73,15 @@ New decisions are appended; superseded ones are marked, not deleted.
 
 - **Decision:** Code, docs and CLI messages in English. MIT license.
 - **Why:** Broader reach as a portfolio project; MIT is simple and permissive.
+
+## D013: CI on GitHub Actions, Ubuntu, Python 3.11–3.14
+
+- **Decision:** One workflow runs lint, format check and tests on every push to `main` and every pull request, on Ubuntu, across Python 3.11–3.14. Actions are pinned to major versions (`@v4`, `@v5`).
+- **Why:** 3.11 is the minimum promised in `pyproject.toml` and 3.14 is the development version, so the matrix proves both ends. Ubuntu alone is enough for now. Windows is excluded because creating symlinks (used in a test) needs extra privileges there.
+- **Alternatives:** Pinning actions by commit SHA (safer against a compromised action, harder to maintain); adding macOS and Windows runners (more coverage, slower, not needed yet).
+
+## D014: Ruff for linting and formatting
+
+- **Decision:** Use Ruff (`ruff check` + `ruff format`) with rules `E`, `F`, `I`, `UP`, `B`, enforced in CI.
+- **Why:** One fast tool replaces flake8, black and isort. The rule set stays small: real errors, import order, modern syntax and common bug patterns, without stylistic nitpicks.
+- **Alternatives:** flake8 + black + isort (three tools, slower); no linter (inconsistent style over time).

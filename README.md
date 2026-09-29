@@ -1,5 +1,7 @@
 # DevAI
 
+[![CI](https://github.com/albanopedro/DevAI/actions/workflows/ci.yml/badge.svg)](https://github.com/albanopedro/DevAI/actions/workflows/ci.yml)
+
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
 > **Status:** early development (Phase 1: basic CLI).
@@ -54,8 +56,12 @@ Exit codes: `0` success, `1` no command given, `2` path is not a directory.
 ## Development
 
 ```bash
-pytest
+pytest               # tests
+ruff check .         # lint
+ruff format .        # format code
 ```
+
+CI (GitHub Actions) runs lint, format check and tests on Python 3.11–3.14 for every push to `main` and every pull request.
 
 Project layout:
 

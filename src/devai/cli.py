@@ -18,9 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="devai",
         description="AI-powered developer assistant for code analysis.",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"devai {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"devai {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
