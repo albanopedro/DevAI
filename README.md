@@ -2,7 +2,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development. Nothing is usable yet. Planning (Phase 0) comes first.
+> **Status:** early development (Phase 1: basic CLI).
 
 ## Goal
 
@@ -15,6 +15,57 @@ It is a learning and portfolio project, and it grows in small, tested phases.
 - **Deterministic first, AI second.** `devai analyze` works offline with no API key. AI is opt-in and only receives a structured, reviewable context.
 - **Privacy by default.** Honors `.gitignore`, never reads `.env` files, never prints secrets, and never sends code to an external API without explicit consent.
 - **User in control.** DevAI never applies code changes without showing a diff and asking for approval, and never commits or pushes.
+
+## Installation
+
+Requires Python 3.11+.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Usage
+
+```bash
+devai --help
+devai --version
+devai analyze            # current directory
+devai analyze path/to/project
+```
+
+Example output:
+
+```
+DEVAI ANALYSIS
+────────────────────────────────────
+Project:        campo-main
+Path:           /home/user/code/campo-main
+Files:          110
+Git repository: no
+README:         yes
+```
+
+`python -m devai` works the same as `devai`.
+
+Exit codes: `0` success, `1` no command given, `2` path is not a directory.
+
+## Development
+
+```bash
+pytest
+```
+
+Project layout:
+
+```
+src/devai/
+├── cli.py       # argument parsing and output
+├── scanner.py   # walks the project directory
+└── models.py    # data models (ProjectInfo)
+tests/
+```
 
 ## Roadmap
 
