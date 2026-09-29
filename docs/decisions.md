@@ -85,3 +85,22 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Decision:** Use Ruff (`ruff check` + `ruff format`) with rules `E`, `F`, `I`, `UP`, `B`, enforced in CI.
 - **Why:** One fast tool replaces flake8, black and isort. The rule set stays small: real errors, import order, modern syntax and common bug patterns, without stylistic nitpicks.
 - **Alternatives:** flake8 + black + isort (three tools, slower); no linter (inconsistent style over time).
+
+## D015: File listing via git first, filesystem walk as fallback
+
+- **Decision:** Inside a git work tree, list files with `git ls-files --cached --others --exclude-standard -z`. Otherwise (or if git fails), walk the filesystem, skip a fixed set of generated directories and apply the root `.gitignore`.
+- **Why:** Git's own listing is exact by definition. It honors nested `.gitignore` files, `.git/info/exclude`, the global excludes file, and keeps tracked files that match an ignore pattern. The fallback covers projects without git, such as a downloaded ZIP that still carries its `.gitignore`.
+- **Alternatives:** Always use the filesystem walk with pathspec. That is one code path, but it misses nested and global rules. Filesystem walk only, with no `.gitignore` support: generated and editor folders inflate the counts (51 of 110 files in a real test project).
+- **Consequence:** The user's global excludes file affects results, as it does `git status`. Tests isolate `HOME`/`XDG_CONFIG_HOME` for this reason.
+
+## D016: pathspec for `.gitignore` matching
+
+- **Decision:** Use `pathspec` (`GitIgnoreSpec`), the first runtime dependency.
+- **Why:** Gitignore semantics are subtle: negation (`!`), anchoring (`/build`), directory-only patterns (`logs/`), `**`. pathspec implements git's behavior, is pure Python, and has no dependencies of its own.
+- **Alternatives:** A hand-written matcher on `fnmatch` (error-prone, and mistakes silently skew results); no `.gitignore` support in the fallback.
+
+## D017: Languages by file extension, counted in files
+
+- **Decision:** Map extensions to languages with a plain dictionary and count files per language. Data and docs formats are excluded. `.jsx`/`.tsx` count as JavaScript/TypeScript.
+- **Why:** Simple, predictable and fast, with no need to read file contents.
+- **Alternatives:** Count bytes or lines, as GitHub Linguist does. That is more representative, but lines require reading every file, and extensions are ambiguous in some cases (`.h`). Content-based detection is a possible later improvement.

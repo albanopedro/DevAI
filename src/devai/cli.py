@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 from devai import __version__
-from devai.models import ProjectInfo
-from devai.scanner import scan_project
+from devai.analyzer import analyze_project
+from devai.report import format_project_info
 
 EXIT_OK = 0
 EXIT_USAGE = 1
@@ -47,28 +47,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_analyze(path: Path) -> int:
     try:
-        info = scan_project(path)
+        info = analyze_project(path)
     except NotADirectoryError:
         print(f"devai: error: not a directory: {path}", file=sys.stderr)
         return EXIT_BAD_PATH
 
     print(format_project_info(info))
     return EXIT_OK
-
-
-def format_project_info(info: ProjectInfo) -> str:
-    return "\n".join(
-        [
-            "DEVAI ANALYSIS",
-            "─" * 36,
-            f"Project:        {info.name}",
-            f"Path:           {info.path}",
-            f"Files:          {info.file_count}",
-            f"Git repository: {yes_no(info.has_git)}",
-            f"README:         {yes_no(info.has_readme)}",
-        ]
-    )
-
-
-def yes_no(value: bool) -> str:
-    return "yes" if value else "no"

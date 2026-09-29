@@ -9,7 +9,7 @@ description = "AI-powered developer assistant for code analysis, review, testing
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pathspec>=0.12"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]

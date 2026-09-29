@@ -34,13 +34,45 @@ def test_analyze_prints_project_info(tmp_path, capsys):
     (project / "README.md").write_text("# Demo")
     (project / "main.py").write_text("print('hi')")
 
+    (project / "src").mkdir()
+    for name in ["app.py", "util.py", "index.js"]:
+        (project / "src" / name).write_text("x")
+
     assert main(["analyze", str(project)]) == EXIT_OK
 
+    assert capsys.readouterr().out == (
+        "DEVAI ANALYSIS\n"
+        "────────────────────────────────────\n"
+        "Project:        demo\n"
+        f"Path:           {project.resolve()}\n"
+        "Files:          5 (filesystem)\n"
+        "Git repository: no\n"
+        "README:         yes\n"
+        "\n"
+        "Languages:\n"
+        "  Python      3 files   75%\n"
+        "  JavaScript  1 file    25%\n"
+        "\n"
+        "Structure:\n"
+        "  src/    3 files\n"
+        "  (root)  2 files\n"
+    )
+
+
+def test_analyze_empty_directory(tmp_path, capsys):
+    assert main(["analyze", str(tmp_path)]) == EXIT_OK
+
     out = capsys.readouterr().out
-    assert "Project:        demo" in out
-    assert "Files:          2" in out
-    assert "Git repository: no" in out
-    assert "README:         yes" in out
+    assert "Files:          0 (filesystem)" in out
+    assert "Languages:\n  none detected" in out
+    assert "Structure:\n  empty" in out
+
+
+def test_analyze_prints_warnings(tmp_path, capsys):
+    (tmp_path / ".git").mkdir()
+
+    assert main(["analyze", str(tmp_path)]) == EXIT_OK
+    assert "Warnings:\n  ! A .git directory exists" in capsys.readouterr().out
 
 
 def test_analyze_defaults_to_current_directory(tmp_path, monkeypatch, capsys):

@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 1: basic CLI).
+> **Status:** early development (Phase 2a: project scanner).
 
 ## Goal
 
@@ -44,10 +44,29 @@ DEVAI ANALYSIS
 ────────────────────────────────────
 Project:        campo-main
 Path:           /home/user/code/campo-main
-Files:          110
+Files:          59 (filesystem + .gitignore)
 Git repository: no
 README:         yes
+
+Languages:
+  CSS         11 files   50%
+  JavaScript  10 files   45%
+  HTML         1 file     5%
+
+Structure:
+  public/   3 files
+  src/     47 files
+  (root)    9 files
 ```
+
+### How files are found
+
+DevAI only reads file **names** at this stage, never file contents (the one exception is `.gitignore`).
+
+- **Inside a git repository** (or any subdirectory of one), git lists the files: tracked files plus untracked files that aren't ignored. Every ignore rule applies, including nested `.gitignore` files, `.git/info/exclude` and your global excludes file. Shown as `(git)`.
+- **Otherwise**, DevAI walks the directory, skips common generated folders (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`...) and applies the **root** `.gitignore` if there is one. Shown as `(filesystem)` or `(filesystem + .gitignore)`. Limitation: `.gitignore` files in subdirectories are not read in this mode.
+
+Languages are detected by file extension. Data and docs formats (JSON, YAML, Markdown) are not counted as languages.
 
 `python -m devai` works the same as `devai`.
 
@@ -67,9 +86,15 @@ Project layout:
 
 ```
 src/devai/
-├── cli.py       # argument parsing and output
-├── scanner.py   # walks the project directory
-└── models.py    # data models (ProjectInfo)
+├── cli.py            # argument parsing, calls the analyzer, prints the report
+├── report.py         # formats results as terminal text
+├── models.py         # data models (ProjectInfo, LanguageStat, ...)
+├── git.py            # small subprocess wrapper around the git CLI
+└── analyzer/
+    ├── project.py    # runs every step, builds ProjectInfo
+    ├── files.py      # file listing (git or filesystem + .gitignore)
+    ├── languages.py  # extension → language
+    └── structure.py  # files per top-level directory
 tests/
 ```
 
