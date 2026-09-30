@@ -1,6 +1,6 @@
 """Data models shared across DevAI."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
@@ -66,6 +66,49 @@ class DirectoryStat:
     files: int
 
 
+class Severity(StrEnum):
+    """How serious a finding is, declared from least to most severe.
+
+    Compare severities with `rank`, never with `<`: StrEnum members compare
+    as plain strings, and "high" < "low" alphabetically.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+    @property
+    def rank(self) -> int:
+        return list(Severity).index(self)
+
+
+@dataclass(frozen=True)
+class Finding:
+    """A problem detected in the project (D009)."""
+
+    rule_id: str
+    severity: Severity
+    message: str
+    file: PurePosixPath | None = None
+    line: int | None = None
+    evidence: str | None = None  # masked: never a full secret (D010, D021)
+
+
+@dataclass(frozen=True)
+class SecretScanStats:
+    scanned: int = 0
+    skipped: int = 0  # never opened or not scannable (env, lock, binary...)
+
+
+@dataclass(frozen=True)
+class CheckReport:
+    """Results of all checks: problems found and checks that passed."""
+
+    findings: tuple[Finding, ...] = ()
+    passed: tuple[str, ...] = ()
+    secret_scan: SecretScanStats = SecretScanStats()
+
+
 @dataclass(frozen=True)
 class ProjectInfo:
     """Basic facts about a scanned project."""
@@ -84,3 +127,5 @@ class ProjectInfo:
     directories: tuple[DirectoryStat, ...] = ()
     root_file_count: int = 0
     warnings: tuple[str, ...] = ()
+    # Every project file, relative to `path`. Used by checks; hidden from repr.
+    files: tuple[PurePosixPath, ...] = field(default=(), repr=False)

@@ -33,3 +33,18 @@ def git_repo(tmp_path, tmp_path_factory, monkeypatch):
 
 def git_add(repo: Path, *paths: str) -> None:
     subprocess.run(["git", "-C", str(repo), "add", *paths], check=True)
+
+
+# Fake secrets are assembled at runtime, so no complete token ever appears in
+# the source code: DevAI must not flag its own tests, and GitHub push
+# protection must not block a push. The values are random-looking but fake.
+FAKE_SECRETS = {
+    "secret/aws-access-key": ("AKIA" + "Q7" * 8, "AKIA…"),
+    "secret/github-token": ("ghp" + "_" + "a1B2" * 9, "ghp_…"),
+    "secret/anthropic-key": ("sk-" + "ant-" + "api03-" + "a1B2" * 6, "sk-ant-…"),
+    "secret/openai-key": ("sk-" + "proj-" + "a1B2" * 6, "sk-proj-…"),
+    "secret/google-api-key": ("AI" + "za" + "a1B2c3D4e5" * 3 + "f6G7h", "AIza…"),
+    "secret/slack-token": ("xo" + "xb-" + "1234567890-" + "a1B2" * 3, "xoxb-…"),
+    "secret/stripe-key": ("sk" + "_live_" + "a1B2" * 6, "sk_live_…"),
+}
+FAKE_PRIVATE_KEY_HEADER = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"

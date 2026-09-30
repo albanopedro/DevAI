@@ -48,6 +48,7 @@ def analyze_project(path: Path) -> ProjectInfo:
         directories=directories,
         root_file_count=root_file_count,
         warnings=tuple(warnings),
+        files=tuple(listing.files),
     )
 
 

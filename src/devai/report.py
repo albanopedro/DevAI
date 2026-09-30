@@ -1,11 +1,11 @@
-"""Render a ProjectInfo as human-readable terminal text."""
+"""Render analysis results as human-readable terminal text."""
 
-from devai.models import Manifest, ProjectInfo, TestSummary
+from devai.models import CheckReport, Finding, Manifest, ProjectInfo, TestSummary
 
 SEPARATOR = "─" * 36
 
 
-def format_project_info(info: ProjectInfo) -> str:
+def format_report(info: ProjectInfo, checks: CheckReport) -> str:
     lines = [
         "DEVAI ANALYSIS",
         SEPARATOR,
@@ -32,6 +32,15 @@ def format_project_info(info: ProjectInfo) -> str:
         "",
         "Structure:",
         *format_structure(info),
+        "",
+        "Findings:",
+        *format_findings(checks.findings),
+        "",
+        "Passed:",
+        *([f"  ✓ {message}" for message in checks.passed] or ["  none"]),
+        "",
+        f"Secrets scan: {checks.secret_scan.scanned} files scanned, "
+        f"{checks.secret_scan.skipped} skipped",
     ]
     if info.warnings:
         lines += ["", "Warnings:", *(f"  ! {warning}" for warning in info.warnings)]
@@ -77,6 +86,24 @@ def describe_tests(tests: TestSummary) -> str:
     if frameworks:
         return f"no test files found ({frameworks} in dependencies)"
     return "none detected"
+
+
+def format_findings(findings: tuple[Finding, ...]) -> list[str]:
+    if not findings:
+        return ["  none"]
+
+    lines = []
+    for finding in findings:
+        title = finding.message
+        if finding.evidence:
+            title += f" ({finding.evidence})"
+        lines.append(f"  ⚠ {finding.severity.upper():<6}  {title}")
+        if finding.file:
+            location = (
+                f"{finding.file}:{finding.line}" if finding.line else finding.file
+            )
+            lines.append(f"{'':12}{location}")  # aligned under the title
+    return lines
 
 
 def format_structure(info: ProjectInfo) -> list[str]:

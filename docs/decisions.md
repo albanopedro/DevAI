@@ -123,3 +123,28 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Why:** Predictable, easy to test and extend with one line. The tables are per ecosystem, so an npm name never matches a Python package.
 - **Alternatives:** Content-based detection (imports, config file contents). More accurate, but it needs to read source code, which is out of scope for 2b (D018).
 - **Known limits:** Poetry's `[tool.poetry.dependencies]` isn't read. `unittest`-only Python projects show test files but no test framework, because unittest is in the standard library.
+
+## D021: Secret scanning rules
+
+- **Decision:** Scan project text files line by line for known secret formats (precise, HIGH) and quoted credential assignments (generic, MEDIUM). Real `.env` files are never opened, but templates (`.env.example`...) are. Symlinks, lock files, minified files, binaries and files over 1 MB are skipped. Evidence is only the public prefix of a secret (`AKIA…`), or the variable name for generic matches (`DB_PASSWORD = …`).
+- **Why:** This is the first code that reads source contents, so the rules are explicit and tested. A security tool must never become the leak (D010). Prefix rules also require the value to contain digits and letters, and skip known placeholders, to keep noise low.
+- **Alternatives:** Entropy-based detection (finds more, but noisier); dedicated tools such as gitleaks or detect-secrets (much better coverage, but an external dependency and less to learn). DevAI's scan is a first line of defense, not a replacement.
+- **Known limits:** Only the first match per line is reported. The generic rule is skipped in test files, which are full of fake passwords. Test secrets in DevAI's own tests are assembled at runtime, so no real-looking token exists in the source.
+
+## D022: Exit codes follow linter conventions; `--fail-on` is opt-in
+
+- **Decision:** `0` success, `1` findings at or above `--fail-on`, `2` usage errors. `--fail-on` defaults to `none`.
+- **Why:** argparse already exits with `2` on invalid arguments, so the old codes (`1` no command, `2` bad path) collided. The new ones match ruff and eslint. `analyze` is a report, so running it locally shouldn't "fail"; CI opts in with `--fail-on high`.
+- **Alternatives:** Fail on HIGH by default, like linters do. It is stricter, but noisy for exploratory use.
+
+## D023: Versioned JSON output
+
+- **Decision:** `--format json` serializes `ProjectInfo` and `CheckReport` with `dataclasses.asdict`, plus `schema_version` and `devai_version`.
+- **Why:** Scripts and CI can rely on the structure; `schema_version` signals breaking changes. Reusing the dataclasses keeps text and JSON in sync automatically.
+- **Alternatives:** A hand-built dict (more control, but drifts from the models); Pydantic models (planned for Phase 3, not needed for output).
+
+## D024: Checks are a separate layer from the analyzer
+
+- **Decision:** `analyzer/` describes the project (`ProjectInfo`, including the file list), and `checks/` judges it (`CheckReport`). Checks import from the analyzer, never the reverse. The CLI orchestrates: analyze → check → render.
+- **Why:** The first plan (the analyzer calling the checks) created a circular import, because checks need analyzer helpers such as `is_test_file`. Circular imports work or break depending on import order. A one-way dependency also keeps "facts" and "opinions" apart, which will matter when AI analysis (Phase 3) consumes the same facts.
+- **Alternatives:** Findings inside `ProjectInfo` (one object, but mixes description and judgment); lazy imports to break the cycle (hides the design problem).

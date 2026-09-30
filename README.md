@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 2b: stack detection).
+> **Status:** early development (Phase 2c: findings).
 
 ## Goal
 
@@ -33,8 +33,10 @@ pip install -e ".[dev]"
 ```bash
 devai --help
 devai --version
-devai analyze            # current directory
+devai analyze                     # current directory
 devai analyze path/to/project
+devai analyze --format json       # machine-readable output
+devai analyze --fail-on high      # exit code 1 if there is a HIGH finding (for CI)
 ```
 
 Example output:
@@ -72,11 +74,22 @@ Structure:
   public/   3 files
   src/     47 files
   (root)    9 files
+
+Findings:
+  ⚠ MEDIUM  No automated tests detected
+
+Passed:
+  ✓ README found
+  ✓ .gitignore found
+  ✓ No exposed .env files
+  ✓ No known secret patterns found
+
+Secrets scan: 30 files scanned, 29 skipped
 ```
 
 ### How files are found
 
-DevAI works from file **names**. The only files it opens are `.gitignore` and dependency manifests (see below). Source code is never read at this stage.
+DevAI describes the project from file **names**, `.gitignore` and dependency manifests. Only the secret scan reads other files, under the rules in [Findings](#findings).
 
 - **Inside a git repository** (or any subdirectory of one), git lists the files: tracked files plus untracked files that aren't ignored. Every ignore rule applies, including nested `.gitignore` files, `.git/info/exclude` and your global excludes file. Shown as `(git)`.
 - **Otherwise**, DevAI walks the directory, skips common generated folders (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`...) and applies the **root** `.gitignore` if there is one. Shown as `(filesystem)` or `(filesystem + .gitignore)`. Limitation: `.gitignore` files in subdirectories are not read in this mode.
@@ -93,9 +106,44 @@ DevAI works from file **names**. The only files it opens are `.gitignore` and de
 
 A manifest that can't be parsed shows up as a warning. The warning never includes file contents.
 
-`python -m devai` works the same as `devai`.
+### Findings
 
-Exit codes: `0` success, `1` no command given, `2` path is not a directory.
+After describing the project, DevAI runs checks and reports problems by severity:
+
+| Severity | Rule | What it means |
+|---|---|---|
+| HIGH | `secret/*` | A known secret format in a file: AWS, GitHub, OpenAI, Anthropic, Google, Slack, Stripe keys, private keys |
+| HIGH | `env-not-ignored` | A real `.env` file is tracked, or isn't ignored by git |
+| MEDIUM | `secret/generic` | A quoted value assigned to a name like `api_key`, `token` or `password` (placeholders filtered; skipped in test files) |
+| MEDIUM | `no-tests` | Source code, but no test files |
+| LOW | `no-readme`, `no-gitignore` | Missing README or `.gitignore` |
+
+**Privacy rules of the secret scan:**
+
+- Real `.env` files (`.env`, `.env.local`, `.envrc`...) are **never opened**. Templates (`.env.example`, `.env.sample`...) are scanned, since they are meant to be committed.
+- Symlinks, lock files, minified files, binaries and files over 1 MB are skipped.
+- A finding shows only the public prefix of a secret (`AKIA…`, `ghp_…`), the same for everyone. It never shows the secret or the line it is on, in text or JSON.
+- Contents are checked in memory and discarded. Nothing leaves your machine.
+
+No set of patterns catches every secret. The report says "No known secret patterns found", not "no secrets".
+
+### JSON output and exit codes
+
+`--format json` prints everything in the text report as JSON, including the file list and each finding. The top-level `schema_version` (currently `1`) changes only when the structure changes incompatibly.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success (findings don't fail the run unless you use `--fail-on`) |
+| `1` | A finding at or above the `--fail-on` level (`high`, `medium`, `low`) |
+| `2` | Usage error: no command, path is not a directory, invalid argument |
+
+Example CI step:
+
+```bash
+devai analyze --fail-on high
+```
+
+`python -m devai` works the same as `devai`.
 
 ## Development
 
@@ -111,9 +159,10 @@ Project layout:
 
 ```
 src/devai/
-├── cli.py            # argument parsing, calls the analyzer, prints the report
+├── cli.py            # arguments; runs analyzer → checks → report
 ├── report.py         # formats results as terminal text
-├── models.py         # data models (ProjectInfo, LanguageStat, ...)
+├── json_report.py    # formats results as JSON
+├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
 ├── git.py            # small subprocess wrapper around the git CLI
 └── analyzer/
     ├── project.py       # runs every step, builds ProjectInfo
@@ -124,6 +173,10 @@ src/devai/
     ├── testing.py       # test file conventions
     ├── config_files.py  # well-known configuration files
     └── structure.py     # files per top-level directory
+└── checks/           # judges the analyzer's output (depends on analyzer, not vice versa)
+    ├── runner.py          # runs every check, sorts findings
+    ├── project_checks.py  # README, .gitignore, tests, exposed .env
+    └── secrets.py         # secret patterns, file skipping, masking
 tests/
 ```
 
