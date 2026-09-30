@@ -42,6 +42,25 @@ def git_add(repo: Path, *paths: str) -> None:
     subprocess.run(["git", "-C", str(repo), "add", *paths], check=True)
 
 
+def git_commit(repo: Path, message: str = "test commit") -> None:
+    """Commit everything in a THROWAWAY test repository (never the user's)."""
+    identity = ["-c", "user.name=DevAI Test", "-c", "user.email=test@example.invalid"]
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *identity, "commit", "-q", "-m", message], check=True
+    )
+
+
+def git_run(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def write(root: Path, relative: str, text: str) -> None:
+    """Create `root/relative` with `text`, creating parent directories."""
+    make_files(root, relative)
+    (root / relative).write_text(text)
+
+
 # Fake secrets are assembled at runtime, so no complete token ever appears in
 # the source code: DevAI must not flag its own tests, and GitHub push
 # protection must not block a push. The values are random-looking but fake.

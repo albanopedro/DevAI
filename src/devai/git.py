@@ -1,5 +1,6 @@
 """Minimal wrapper around the git command-line tool (see D007)."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -44,3 +45,28 @@ def list_files(path: Path) -> list[str]:
         path, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
     )
     return [name for name in output.split("\0") if name]
+
+
+def untracked_files(path: Path) -> list[str]:
+    """New files git doesn't track yet and doesn't ignore, relative to `path`."""
+    output = run_git(path, "ls-files", "--others", "--exclude-standard", "-z")
+    return [name for name in output.split("\0") if name]
+
+
+def has_commits(path: Path) -> bool:
+    """False in a new repository whose first commit hasn't been made yet."""
+    try:
+        run_git(path, "rev-parse", "--verify", "--quiet", "HEAD")
+    except GitError:
+        return False
+    return True
+
+
+def empty_tree(path: Path) -> str:
+    """The id of the empty tree: what "before" means in a repo with no commits."""
+    return run_git(path, "hash-object", "-t", "tree", os.devnull).strip()
+
+
+def merge_base(path: Path, ref: str) -> str:
+    """The commit where HEAD's history split from `ref` (as in a pull request)."""
+    return run_git(path, "merge-base", ref, "HEAD").strip()

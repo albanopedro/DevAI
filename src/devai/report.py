@@ -3,10 +3,19 @@
 import textwrap
 
 from devai.ai.result import AIResult
-from devai.models import CheckReport, Finding, Manifest, ProjectInfo, TestSummary
+from devai.models import (
+    ChangedFile,
+    CheckReport,
+    Finding,
+    Manifest,
+    ProjectInfo,
+    ReviewReport,
+    TestSummary,
+)
 
 SEPARATOR = "─" * 36
 TEXT_WIDTH = 88
+MAX_LISTED_FILES = 50  # the JSON output lists every file
 
 
 def format_report(info: ProjectInfo, checks: CheckReport) -> str:
@@ -193,3 +202,66 @@ def printable(text: str) -> str:
     Model output is untrusted: an escape sequence could rewrite the terminal.
     """
     return "".join(char if char.isprintable() else " " for char in text)
+
+
+def format_review(report: ReviewReport) -> str:
+    """Render `devai review`. Only names, counts and findings: never code."""
+    files = report.files
+    added = sum(file.additions or 0 for file in files)
+    deleted = sum(file.deletions or 0 for file in files)
+    lines = [
+        "DEVAI REVIEW",
+        SEPARATOR,
+        f"Project:  {report.name}",
+        f"Changes:  {report.description}",
+    ]
+    if not files:
+        lines += ["", "No changes to review."]
+        return "\n".join(lines)
+
+    lines.append(f"Files:    {len(files)} changed (+{added} -{deleted})")
+    lines += format_changed_files(files)
+    checks = report.checks
+    lines += [
+        "",
+        "Findings:",
+        *format_findings(checks.findings),
+        "",
+        "Passed:",
+        *([f"  ✓ {message}" for message in checks.passed] or ["  none"]),
+        "",
+        f"Content checked: {checks.secret_scan.scanned} files, "
+        f"{checks.secret_scan.skipped} not read (env, lock, binary, large)",
+    ]
+    return "\n".join(lines)
+
+
+def format_changed_files(files: tuple[ChangedFile, ...]) -> list[str]:
+    shown = files[:MAX_LISTED_FILES]
+    names = [describe_path(file) for file in shown]
+    width = max(len(name) for name in names)
+    lines = [
+        f"  {file.status}  {name:<{width}}  {describe_counts(file)}".rstrip()
+        for file, name in zip(shown, names, strict=True)
+    ]
+    if len(files) > len(shown):
+        lines.append(f"  … and {len(files) - len(shown)} more (see --format json)")
+    return lines
+
+
+def describe_path(file: ChangedFile) -> str:
+    name = printable(str(file.path))  # file names come from the project: untrusted
+    if file.old_path:
+        name = f"{printable(str(file.old_path))} → {name}"
+    return f"{name} (untracked)" if file.untracked else name
+
+
+def describe_counts(file: ChangedFile) -> str:
+    if file.additions is None:
+        return "not counted"
+    parts = []
+    if file.additions:
+        parts.append(f"+{file.additions}")
+    if file.deletions:
+        parts.append(f"-{file.deletions}")
+    return " ".join(parts)

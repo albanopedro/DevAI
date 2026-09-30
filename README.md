@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 3.6: free AI only).
+> **Status:** early development (Phase 4a: local review of git changes).
 
 ## Goal
 
@@ -148,6 +148,32 @@ Example CI step:
 devai analyze --fail-on high
 ```
 
+### Reviewing changes before a commit
+
+`devai review` checks your current git changes: locally, without AI, and for free.
+
+```bash
+devai review                          # working tree vs HEAD (staged, unstaged, untracked)
+devai review --staged                 # exactly what the next commit would contain
+devai review --base main              # committed changes since the branch left main
+devai review --staged --fail-on high  # e.g. as a pre-commit check (exit 1 on HIGH)
+```
+
+| Severity | Rule | What it means |
+|---|---|---|
+| HIGH | `secret/*` | A known secret format in an **added** line (a secret in a removed line is on its way out) |
+| HIGH | `review/env-file` | A real `.env` file is added or changed, so its values would be committed |
+| MEDIUM | `review/no-test-changes` | Source code changed, but no test file did (not raised for docs/config-only changes) |
+| LOW | `review/debug-statement` | `console.log`, `debugger`, `breakpoint()` or `pdb` added (one finding per file) |
+| LOW | `review/large-change` | More than 500 lines changed: consider splitting the change |
+
+How it reads your changes:
+
+- **Names first, content second.** DevAI asks git for the list of changed files (names, statuses, line counts), then reads the added lines only of files the privacy rules allow. A real `.env` is never read, not even through its diff. Lock, minified, binary, symlinked and large files are skipped, as in the secret scan.
+- **Untracked files count as added**, so a new `.env` or a new file with a secret shows up before `git add`.
+- **The report never contains your code**: only file names, line counts and findings, in text and JSON.
+- `--format json` and `--fail-on` work as in `analyze`. Outside a git repository, or with an unknown `--base`, the exit code is `2`.
+
 ### AI analysis
 
 `devai analyze --ai` adds an AI analysis: a summary, risks, prioritized recommendations, and the limits of what it could judge. **It is always free.** There are two providers:
@@ -234,6 +260,9 @@ src/devai/
     ├── runner.py          # runs every check, sorts findings
     ├── project_checks.py  # README, .gitignore, tests, exposed .env
     └── secrets.py         # secret patterns, file skipping, masking
+└── review/           # `devai review`: local checks on git changes
+    ├── diff.py            # changed files and added lines, from git
+    └── checks.py          # secrets, .env, tests, debug statements, size
 tests/
 ```
 
@@ -251,7 +280,8 @@ tests/
 | 3b | AI Analysis | `--ai`: consent, validated structured report, LLM client interface (first provider: Anthropic, removed in 3.6) |
 | 3.5 | Local AI | `--provider ollama`: same context and report, local model, consent only when data leaves the machine |
 | 3.6 | Free AI only | OpenCode free models via the `opencode` CLI (default); Anthropic removed; paid models refused |
-| 4 | Code Review | `devai review`: analyze `git diff` |
+| 4a | Local Review | `devai review`: secrets, `.env`, tests, debug leftovers and size in the current git changes; no AI |
+| 4b | AI Review | Free AI review of the changed code (OpenCode free models or Ollama), with its own privacy boundary |
 | 5 | Contextual Chat | `devai chat` |
 | 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |
 | 7 | Test Generation | `devai test` |

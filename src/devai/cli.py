@@ -11,9 +11,10 @@ from devai.ai.result import AIError, AIResult, LLMClient
 from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
 from devai.checks import run_checks
-from devai.json_report import to_json
+from devai.json_report import review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
-from devai.report import SEPARATOR, format_ai_section, format_report
+from devai.report import SEPARATOR, format_ai_section, format_report, format_review
+from devai.review import ReviewError, review_changes
 
 # Same convention as linters such as ruff and eslint (D022).
 EXIT_OK = 0
@@ -40,20 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="project directory to analyze (default: current directory)",
     )
-    analyze.add_argument(
-        "--format",
-        choices=["text", "json"],
-        default="text",
-        help="output format (default: text)",
-    )
-    analyze.add_argument(
-        "--fail-on",
-        choices=FAIL_ON_LEVELS,
-        default="none",
-        metavar="LEVEL",
-        help="exit with code 1 if there is a finding of this severity or higher: "
-        "high, medium, low or none (default: none)",
-    )
+    add_output_options(analyze)
     analyze.add_argument(
         "--ai",
         action="store_true",
@@ -78,7 +66,46 @@ def build_parser() -> argparse.ArgumentParser:
         "ollama (local model); overrides DEVAI_AI_PROVIDER",
     )
 
+    review = subparsers.add_parser(
+        "review", help="check the current git changes before committing"
+    )
+    review.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="directory inside a git repository (default: current directory)",
+    )
+    which = review.add_mutually_exclusive_group()
+    which.add_argument(
+        "--staged",
+        action="store_true",
+        help="only staged changes: what the next commit would contain",
+    )
+    which.add_argument(
+        "--base",
+        metavar="REF",
+        help="committed changes since the branch left REF, like a pull request",
+    )
+    add_output_options(review)
+
     return parser
+
+
+def add_output_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+    command.add_argument(
+        "--fail-on",
+        choices=FAIL_ON_LEVELS,
+        default="none",
+        metavar="LEVEL",
+        help="exit with code 1 if there is a finding of this severity or higher: "
+        "high, medium, low or none (default: none)",
+    )
 
 
 class SetupError(Exception):
@@ -90,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "review":
+        return run_review(args)
     if args.command != "analyze":
         parser.print_help()
         return EXIT_USAGE
@@ -141,6 +170,26 @@ def run_analyze(args: argparse.Namespace) -> int:
         return EXIT_AI_ERROR
     # The AI's opinion never affects --fail-on: CI must be deterministic (D028).
     return EXIT_FINDINGS if should_fail(checks.findings, args.fail_on) else EXIT_OK
+
+
+def run_review(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    try:
+        report = review_changes(path, staged=args.staged, base=args.base)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    except ReviewError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "json":
+        print(review_to_json(report))
+    else:
+        print(format_review(report))
+    return (
+        EXIT_FINDINGS if should_fail(report.checks.findings, args.fail_on) else EXIT_OK
+    )
 
 
 def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:

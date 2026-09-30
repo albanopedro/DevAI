@@ -129,3 +129,26 @@ class ProjectInfo:
     warnings: tuple[str, ...] = ()
     # Every project file, relative to `path`. Used by checks; hidden from repr.
     files: tuple[PurePosixPath, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True)
+class ChangedFile:
+    """A file in the changes `devai review` looks at."""
+
+    path: PurePosixPath  # relative to the reviewed directory
+    status: str  # git's letter: A(dded), M(odified), D(eleted), R(enamed), T(ype)
+    additions: int | None = None  # None: not counted (binary, or not read)
+    deletions: int | None = None
+    old_path: PurePosixPath | None = None  # renames only
+    untracked: bool = False
+
+
+@dataclass(frozen=True)
+class ReviewReport:
+    """The result of `devai review`. It never contains the changed code itself."""
+
+    name: str
+    path: Path
+    description: str  # which changes: working tree, staged, or since a base
+    files: tuple[ChangedFile, ...]
+    checks: CheckReport
