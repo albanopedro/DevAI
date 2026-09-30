@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 2c: findings).
+> **Status:** early development (Phase 3a: AI context builder).
 
 ## Goal
 
@@ -37,6 +37,7 @@ devai analyze                     # current directory
 devai analyze path/to/project
 devai analyze --format json       # machine-readable output
 devai analyze --fail-on high      # exit code 1 if there is a HIGH finding (for CI)
+devai analyze --ai --dry-run      # preview what an AI analysis would send (sends nothing)
 ```
 
 Example output:
@@ -143,6 +144,26 @@ Example CI step:
 devai analyze --fail-on high
 ```
 
+### AI analysis: what is sent
+
+AI analysis is opt-in (`--ai`) and is being built in two steps. **Phase 3a** (current) builds the data package and lets you inspect it: `devai analyze --ai --dry-run` prints it, makes no network call, and estimates its size. **Phase 3b** will send that same package to Claude (Anthropic) and show a structured report.
+
+| Sent | Never sent |
+|---|---|
+| Project name (the directory name only) | File contents: source code, `.env`, configs |
+| Languages, frameworks, file counts | Absolute paths (they reveal your username) |
+| Dependency **names** per manifest | Dependency versions |
+| Test summary, config file **names** | The full file list |
+| Top-level directories and their file counts | Secrets (only the masked prefix, e.g. `AKIA…`) |
+| Findings (rule, severity, message, file:line, masked evidence) and passed checks | Git history |
+
+Rules behind this table:
+
+- The package is built from an **allow-list**: each field is chosen explicitly, so new data never reaches the AI by accident. A test fails if the set of fields changes.
+- Long lists are capped (50 findings, 20 manifests, 100 dependencies per manifest, 30 config files, 30 directories). Anything cut is listed under `truncated`.
+- File and dependency names come from the analyzed project, so they are untrusted data. The model will receive them as data, with no tools to act on them.
+- DevAI never loads a `.env` file. It runs inside the project it analyzes, so reading `./.env` would mean reading that project's secrets. The API key will come from an environment variable (Phase 3b).
+
 `python -m devai` works the same as `devai`.
 
 ## Development
@@ -162,6 +183,8 @@ src/devai/
 ├── cli.py            # arguments; runs analyzer → checks → report
 ├── report.py         # formats results as terminal text
 ├── json_report.py    # formats results as JSON
+├── ai/
+│   └── context.py    # what an AI may receive: allow-list, size caps
 ├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
 ├── git.py            # small subprocess wrapper around the git CLI
 └── analyzer/
@@ -190,7 +213,8 @@ tests/
 | 2a | Project Scanner | Files, ignore rules, languages, structure |
 | 2b | Stack Detection | Dependencies, frameworks, tests, configuration files |
 | 2c | Findings | `Finding` model, first checks (missing tests, exposed `.env`, secrets), `--format json`, exit codes |
-| 3 | AI Analysis | Opt-in (`--ai`): context builder, LLM client interface, structured report |
+| 3a | AI Context Builder | Allow-listed, size-capped context; `--ai --dry-run` preview, no network |
+| 3b | AI Analysis | Send the context to Claude; structured report; LLM client interface |
 | 3.5 | Local AI | Ollama provider behind the same interface |
 | 4 | Code Review | `devai review`: analyze `git diff` |
 | 5 | Contextual Chat | `devai chat` |

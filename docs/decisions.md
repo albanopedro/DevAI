@@ -148,3 +148,16 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Decision:** `analyzer/` describes the project (`ProjectInfo`, including the file list), and `checks/` judges it (`CheckReport`). Checks import from the analyzer, never the reverse. The CLI orchestrates: analyze → check → render.
 - **Why:** The first plan (the analyzer calling the checks) created a circular import, because checks need analyzer helpers such as `is_test_file`. Circular imports work or break depending on import order. A one-way dependency also keeps "facts" and "opinions" apart, which will matter when AI analysis (Phase 3) consumes the same facts.
 - **Alternatives:** Findings inside `ProjectInfo` (one object, but mixes description and judgment); lazy imports to break the cycle (hides the design problem).
+
+## D025: The AI context is an allow-listed, size-capped summary
+
+- **Decision:** `ai/context.py` builds what a model may receive by picking each field explicitly: project name, languages, frameworks, dependency names, test summary, config file names, top-level structure, findings with masked evidence, and passed checks. File contents, absolute paths, dependency versions, the full file list and git history are never included. Lists are capped, and cuts are recorded under `truncated`. The payload is sent as compact JSON with a `context_version`.
+- **Why:** This module is the only door to an external service. With an allow-list, a field added to `ProjectInfo` later can't leak by accident, and a contract test breaks if the field set changes. Caps keep cost predictable and tell the model when data is incomplete. Real contexts are small (about 200–550 estimated tokens).
+- **Alternatives:** Serialize `ProjectInfo` and remove sensitive fields (deny-list): less code, but new fields leak by default. Send relevant source files: much richer analysis, but a separate privacy decision with its own consent, left for a later phase.
+- **Risks:** File and dependency names are untrusted input, a possible source of prompt injection. They are delivered as data, the model has no tools, and (in 3b) its output is schema-validated, so the worst case is a misleading report, never an action.
+
+## D026: Phase 3 split into 3a (context) and 3b (model call); Anthropic as first provider
+
+- **Decision:** 3a builds and previews the context with no dependency and no network access. 3b adds the call. The first provider is Anthropic (Claude), through the official `anthropic` SDK as an optional extra, behind a small `LLMClient` interface so Ollama (3.5) can plug in.
+- **Why:** The user can review and approve exactly what leaves the machine before any code that sends it exists. An optional extra keeps the core install dependency-light for users who never enable AI.
+- **Related:** DevAI never auto-loads `.env` files, because it runs inside the analyzed project and would read that project's secrets. The API key comes only from the environment. `.env.example` documents the variables.

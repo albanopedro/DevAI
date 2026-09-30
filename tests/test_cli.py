@@ -213,3 +213,50 @@ def test_json_output_is_valid_json(tmp_path, capsys):
 
     document = json.loads(capsys.readouterr().out)
     assert document["checks"]["findings"][0]["rule_id"] == "secret/aws-access-key"
+
+
+# --- AI (Phase 3a: dry run only) ---------------------------------------------
+
+
+def test_ai_dry_run_shows_context_and_size(tmp_path, capsys):
+    make_files(tmp_path, "app.py")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--dry-run"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert out.startswith("AI CONTEXT PREVIEW (dry run: nothing was sent)\n")
+    assert '"context_version": 1' in out
+    assert "tokens, estimated)" in out
+
+
+def test_ai_dry_run_json_is_the_context_only(tmp_path, capsys):
+    make_files(tmp_path, "app.py")
+
+    main(["analyze", str(tmp_path), "--ai", "--dry-run", "--format", "json"])
+
+    assert json.loads(capsys.readouterr().out)["project"]["name"] == tmp_path.name
+
+
+def test_ai_dry_run_makes_no_network_calls(tmp_path, capsys, monkeypatch):
+    import socket
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(socket, "socket", no_network)
+    make_files(tmp_path, "app.py")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--dry-run"]) == EXIT_OK
+
+
+def test_ai_without_dry_run_is_not_available_yet(tmp_path, capsys):
+    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_USAGE
+    assert "not available yet" in capsys.readouterr().err
+
+
+def test_dry_run_requires_ai(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["analyze", str(tmp_path), "--dry-run"])
+
+    assert exit_info.value.code == EXIT_USAGE
+    assert "--dry-run requires --ai" in capsys.readouterr().err
