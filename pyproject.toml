@@ -13,6 +13,8 @@ dependencies = ["pathspec>=0.12"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+# AI analysis (Phase 3b): optional, so the core install stays dependency-light.
+ai = ["anthropic>=1.9,<2"]
 
 [project.scripts]
 devai = "devai.cli:main"

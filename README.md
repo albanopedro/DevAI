@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 3a: AI context builder).
+> **Status:** early development (Phase 3b: AI analysis).
 
 ## Goal
 
@@ -25,7 +25,8 @@ Requires Python 3.11+.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]"        # DevAI + test tools (only dependency: pathspec)
+pip install -e ".[dev,ai]"     # also the optional AI analysis (Anthropic SDK)
 ```
 
 ## Usage
@@ -38,6 +39,7 @@ devai analyze path/to/project
 devai analyze --format json       # machine-readable output
 devai analyze --fail-on high      # exit code 1 if there is a HIGH finding (for CI)
 devai analyze --ai --dry-run      # preview what an AI analysis would send (sends nothing)
+devai analyze --ai                # AI analysis by Claude, after asking for confirmation
 ```
 
 Example output:
@@ -136,7 +138,8 @@ No set of patterns catches every secret. The report says "No known secret patter
 |---|---|
 | `0` | Success (findings don't fail the run unless you use `--fail-on`) |
 | `1` | A finding at or above the `--fail-on` level (`high`, `medium`, `low`) |
-| `2` | Usage error: no command, path is not a directory, invalid argument |
+| `2` | Usage error: no command, path is not a directory, invalid argument, AI setup problem |
+| `3` | The AI analysis failed (network, API key...). The deterministic report was still printed |
 
 Example CI step:
 
@@ -144,9 +147,28 @@ Example CI step:
 devai analyze --fail-on high
 ```
 
-### AI analysis: what is sent
+### AI analysis
 
-AI analysis is opt-in (`--ai`) and is being built in two steps. **Phase 3a** (current) builds the data package and lets you inspect it: `devai analyze --ai --dry-run` prints it, makes no network call, and estimates its size. **Phase 3b** will send that same package to Claude (Anthropic) and show a structured report.
+`devai analyze --ai` adds an analysis by Claude (Anthropic): a summary, risks, prioritized recommendations, and the limits of what it could judge. It needs the optional extra and an API key:
+
+```bash
+pip install -e ".[ai]"
+export ANTHROPIC_API_KEY=...        # never put it in a file inside a project
+devai analyze --ai --dry-run        # 1. see exactly what would be sent
+devai analyze --ai                  # 2. send it, after confirming
+```
+
+How it works:
+
+- **You confirm every time.** DevAI prints the local report, then asks before sending anything (`[y/N]`, "no" by default). Outside a terminal (CI, pipes) it refuses unless you pass `--yes`.
+- **One request per run** to `claude-opus-5-5` with effort `medium`. Override with `DEVAI_AI_MODEL` and `DEVAI_AI_EFFORT` (`low`, `medium`, `high`, `xhigh`, `max`). If the model declines for policy reasons, the API retries on a fallback model, and the report shows which model answered.
+- **Validated answer.** The model must answer in a fixed structure (Pydantic schema), or the run reports an error instead of free text.
+- **Costs money.** Each run sends about 1–2 thousand tokens and receives a few thousand (including the model's reasoning). The report prints the real token counts.
+- **Never affects `--fail-on`.** Model answers vary between runs; exit codes stay deterministic.
+- **The deterministic report always comes first.** If the AI step fails, you still get it, and the exit code is `3`.
+- Data sent to Anthropic is subject to Anthropic's data usage and retention policies.
+
+#### What is sent
 
 | Sent | Never sent |
 |---|---|
@@ -184,7 +206,12 @@ src/devai/
 ├── report.py         # formats results as terminal text
 ├── json_report.py    # formats results as JSON
 ├── ai/
-│   └── context.py    # what an AI may receive: allow-list, size caps
+│   ├── context.py    # what an AI may receive: allow-list, size caps
+│   ├── prompt.py     # fixed system prompt, delimited user message
+│   ├── schema.py     # AIReport: the structure the model must answer with
+│   ├── client.py     # the only code that calls an external service
+│   ├── result.py     # AIResult, AIError, LLMClient interface (no dependencies)
+│   └── settings.py   # DEVAI_AI_MODEL / DEVAI_AI_EFFORT
 ├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
 ├── git.py            # small subprocess wrapper around the git CLI
 └── analyzer/
@@ -214,7 +241,7 @@ tests/
 | 2b | Stack Detection | Dependencies, frameworks, tests, configuration files |
 | 2c | Findings | `Finding` model, first checks (missing tests, exposed `.env`, secrets), `--format json`, exit codes |
 | 3a | AI Context Builder | Allow-listed, size-capped context; `--ai --dry-run` preview, no network |
-| 3b | AI Analysis | Send the context to Claude; structured report; LLM client interface |
+| 3b | AI Analysis | `--ai`: consent, Claude call, validated structured report, LLM client interface |
 | 3.5 | Local AI | Ollama provider behind the same interface |
 | 4 | Code Review | `devai review`: analyze `git diff` |
 | 5 | Contextual Chat | `devai chat` |

@@ -161,3 +161,20 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Decision:** 3a builds and previews the context with no dependency and no network access. 3b adds the call. The first provider is Anthropic (Claude), through the official `anthropic` SDK as an optional extra, behind a small `LLMClient` interface so Ollama (3.5) can plug in.
 - **Why:** The user can review and approve exactly what leaves the machine before any code that sends it exists. An optional extra keeps the core install dependency-light for users who never enable AI.
 - **Related:** DevAI never auto-loads `.env` files, because it runs inside the analyzed project and would read that project's secrets. The API key comes only from the environment. `.env.example` documents the variables.
+
+## D027: AI client: one structured request, behind a small interface
+
+- **Decision:** `ai/client.py` sends one request per run through `client.beta.messages.parse`: the fixed system prompt, the context from D025 wrapped in `<project_context>` tags, and `AIReport` (Pydantic) as the required output format. Defaults are `claude-opus-5-5` at effort `medium`, configurable by environment variable. Server-side refusal fallback (`fallbacks: "default"`) is enabled, and the report shows the model that actually answered. The CLI depends only on the `LLMClient` protocol, so Ollama (3.5) can be a second implementation. The SDK is an optional `[ai]` extra, imported only when `--ai` is used.
+- **Why:** Structured output turns "the model said something" into a validated object; an answer in the wrong shape is an error, not text to guess at. A protocol keeps the CLI independent of the provider. Every SDK failure becomes a short `AIError` message. One case needs care: with no credentials, the SDK raises a plain `TypeError` before any network access, so it is matched narrowly, and any other `TypeError` still surfaces as a bug.
+- **Alternatives:** Raw HTTP with urllib (no dependency, but retries, errors and validation rewritten by hand); a multi-provider library such as LiteLLM (heavy, hides the API); free-text answers parsed with regexes (brittle).
+
+## D028: Consent before sending; AI never changes exit codes
+
+- **Decision:** `--ai` shows the local report, then asks `[y/N]` on stderr before sending. Outside a terminal it refuses unless `--yes` is given. `--fail-on` looks only at deterministic findings. A failed AI step exits with `3`, after the full local report.
+- **Why:** Data leaves the machine only after an explicit, informed yes, and a script or alias can't send it by accident. Model answers vary between runs, so letting them decide CI results would make builds flaky.
+- **Alternatives:** Treat `--ai` itself as consent (simpler, but easy to trigger by accident); fail on AI-reported risks (non-deterministic CI).
+
+## D029: Model output and project names are untrusted text
+
+- **Decision:** `serialize_context` escapes `<` as `\u003c`, so no name from the project can close the `<project_context>` delimiter. The system prompt says the summary contains no instructions. The model has no tools. Before printing, the text report replaces control characters in AI output (such as ANSI escape codes) with spaces.
+- **Why:** The analyzed project controls file and dependency names (prompt injection), and the model controls its answer (terminal escape sequences). Neither can trigger an action: the worst case is a misleading report, which the output labels as AI-written, without reading the code.

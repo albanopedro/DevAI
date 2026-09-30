@@ -126,8 +126,13 @@ def cap(
 
 
 def serialize_context(context: dict[str, Any]) -> str:
-    """Compact JSON: the exact form sent to the model (fewer tokens than indented)."""
-    return json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    """Compact JSON: the exact form sent to the model (fewer tokens than indented).
+
+    "<" is escaped as \\u003c (still valid, equivalent JSON), so a name from the
+    project such as "</project_context>" can't close the prompt's delimiter.
+    """
+    text = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    return text.replace("<", "\\u003c")
 
 
 def estimate_tokens(text: str) -> int:

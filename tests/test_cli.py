@@ -1,12 +1,14 @@
+import io
 import json
 import subprocess
 import sys
 
 import pytest
-from conftest import FAKE_SECRETS, make_files
+from conftest import FAKE_SECRETS, fake_ai_report, make_files
 
-from devai import __version__
-from devai.cli import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE, main
+from devai import __version__, cli
+from devai.ai.result import AIError, AIResult, AIUsage
+from devai.cli import EXIT_AI_ERROR, EXIT_FINDINGS, EXIT_OK, EXIT_USAGE, main
 
 
 def test_version(capsys):
@@ -249,14 +251,169 @@ def test_ai_dry_run_makes_no_network_calls(tmp_path, capsys, monkeypatch):
     assert main(["analyze", str(tmp_path), "--ai", "--dry-run"]) == EXIT_OK
 
 
-def test_ai_without_dry_run_is_not_available_yet(tmp_path, capsys):
-    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_USAGE
-    assert "not available yet" in capsys.readouterr().err
-
-
 def test_dry_run_requires_ai(tmp_path, capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["analyze", str(tmp_path), "--dry-run"])
 
     assert exit_info.value.code == EXIT_USAGE
     assert "--dry-run requires --ai" in capsys.readouterr().err
+
+
+# --- AI (Phase 3b): the model is always a fake here, never the network -------
+
+
+class FakeLLMClient:
+    def __init__(self, result=None, error=None):
+        self.contexts = []
+        self.result = result or AIResult(
+            fake_ai_report(), "fake-model", AIUsage(10, 20)
+        )
+        self.error = error
+
+    def analyze(self, context):
+        self.contexts.append(context)
+        if self.error:
+            raise self.error
+        return self.result
+
+
+@pytest.fixture
+def fake_ai(monkeypatch):
+    """Replace the Anthropic client; simulate a non-interactive terminal."""
+    pytest.importorskip("pydantic")  # AIReport needs the optional [ai] extra
+    client = FakeLLMClient()
+    monkeypatch.setattr(cli, "create_ai_client", lambda settings: client)
+    monkeypatch.setattr(cli, "is_interactive", lambda: False)
+    for variable in ["DEVAI_AI_MODEL", "DEVAI_AI_EFFORT"]:
+        monkeypatch.delenv(variable, raising=False)
+    return client
+
+
+def answer(monkeypatch, text):
+    """Pretend to be a terminal where the user types `text`."""
+    monkeypatch.setattr(cli, "is_interactive", lambda: True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+
+
+def test_ai_with_yes_adds_the_ai_section(tmp_path, capsys, fake_ai):
+    make_files(tmp_path, "app.py")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "Findings:" in captured.out  # the deterministic report comes first
+    assert "AI ANALYSIS (fake-model)" in captured.out
+    assert "  ⚠ HIGH    Secrets committed" in captured.out
+    assert "  1. Ignore .env files [small effort]" in captured.out
+    assert "Tokens: 10 in / 20 out" in captured.out
+    assert "Analyzing with claude-opus-5-5…" in captured.err
+    assert len(fake_ai.contexts) == 1
+
+
+def test_ai_sends_the_same_context_as_the_dry_run(tmp_path, capsys, fake_ai):
+    make_files(tmp_path, "app.py")
+    main(["analyze", str(tmp_path), "--ai", "--dry-run", "--format", "json"])
+    previewed = json.loads(capsys.readouterr().out)
+
+    main(["analyze", str(tmp_path), "--ai", "--yes"])
+
+    assert fake_ai.contexts == [previewed]
+
+
+@pytest.mark.parametrize("typed", ["y\n", "yes\n", "Y\n"])
+def test_consent_yes_sends(tmp_path, capsys, fake_ai, monkeypatch, typed):
+    answer(monkeypatch, typed)
+
+    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_OK
+
+    assert len(fake_ai.contexts) == 1
+    assert "no source code) to Anthropic (claude-opus-5-5)?" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("typed", ["n\n", "\n", "", "whatever\n"])
+def test_anything_but_yes_sends_nothing(tmp_path, capsys, fake_ai, monkeypatch, typed):
+    answer(monkeypatch, typed)
+
+    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert fake_ai.contexts == []
+    assert "Nothing was sent" in captured.err
+    assert "Findings:" in captured.out  # the local report is still shown
+    assert (
+        "AI ANALYSIS (" not in captured.out
+    )  # "DEVAI ANALYSIS" also matches "AI ANALYSIS"
+
+
+def test_non_interactive_without_yes_refuses(tmp_path, capsys, fake_ai):
+    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_USAGE
+
+    captured = capsys.readouterr()
+    assert fake_ai.contexts == []
+    assert captured.out == ""
+    assert "add --yes to confirm" in captured.err
+
+
+def test_yes_requires_ai(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["analyze", str(tmp_path), "--yes"])
+
+    assert exit_info.value.code == EXIT_USAGE
+
+
+def test_ai_failure_still_prints_the_report(tmp_path, capsys, fake_ai):
+    fake_ai.error = AIError("Could not reach the Anthropic API.")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_AI_ERROR
+
+    captured = capsys.readouterr()
+    assert "Findings:" in captured.out
+    assert "AI analysis failed: Could not reach the Anthropic API." in captured.err
+
+
+def test_ai_json_output(tmp_path, capsys, fake_ai):
+    make_files(tmp_path, "app.py")
+
+    main(["analyze", str(tmp_path), "--ai", "--yes", "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)  # stdout is pure JSON
+    assert document["schema_version"] == 1
+    assert document["ai"]["model"] == "fake-model"
+    assert document["ai"]["usage"] == {"input_tokens": 10, "output_tokens": 20}
+    assert document["ai"]["report"]["risks"][0]["severity"] == "high"
+
+
+def test_fail_on_ignores_the_ai_opinion(tmp_path, capsys, fake_ai):
+    # The fake AI reports a HIGH risk; the project itself has no HIGH finding.
+    make_files(tmp_path, "README.md", ".gitignore", "tests/test_app.py")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--yes", "--fail-on", "high"]) == 0
+
+
+def test_missing_ai_extra_explains_how_to_install(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # makes `import anthropic` fail
+    monkeypatch.delitem(sys.modules, "devai.ai.client", raising=False)
+
+    assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_USAGE
+    assert "pip install 'devai[ai]'" in capsys.readouterr().err
+
+
+def test_invalid_ai_setting_is_a_usage_error(tmp_path, capsys, fake_ai, monkeypatch):
+    monkeypatch.setenv("DEVAI_AI_EFFORT", "extreme")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_USAGE
+    assert "DEVAI_AI_EFFORT must be one of" in capsys.readouterr().err
+    assert fake_ai.contexts == []
+
+
+def test_ai_text_is_stripped_of_control_characters(tmp_path, capsys, fake_ai):
+    hostile = "Looks fine\x1b[2J\x1b[31m and more\nnew line"
+    fake_ai.result = AIResult(
+        fake_ai_report(summary=hostile), "fake-model", AIUsage(1, 1)
+    )
+
+    main(["analyze", str(tmp_path), "--ai", "--yes"])
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "Looks fine [2J [31m and more new line" in out  # each control char → space

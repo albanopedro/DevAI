@@ -1,9 +1,14 @@
+import importlib.util
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# Tests of the Anthropic client need the optional [ai] extra; without it,
+# pytest doesn't collect them (the rest of DevAI must work without the extra).
+collect_ignore = [] if importlib.util.find_spec("anthropic") else ["test_ai_client.py"]
 
 
 def make_files(root: Path, *relative_paths: str) -> None:
@@ -48,3 +53,29 @@ FAKE_SECRETS = {
     "secret/stripe-key": ("sk" + "_live_" + "a1B2" * 6, "sk_live_…"),
 }
 FAKE_PRIVATE_KEY_HEADER = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
+
+
+def fake_ai_report(**overrides):
+    """A valid AIReport, as the model would return it (requires the [ai] extra)."""
+    from devai.ai.schema import AIRecommendation, AIReport, AIRisk
+
+    fields = dict(
+        summary="A small Python CLI that analyzes software projects.",
+        risks=[
+            AIRisk(
+                title="Secrets committed",
+                severity="high",
+                explanation="An environment file is not ignored by git.",
+                related_rule="env-not-ignored",
+            )
+        ],
+        recommendations=[
+            AIRecommendation(
+                title="Ignore .env files",
+                rationale="Prevents committing credentials.",
+                effort="small",
+            )
+        ],
+        limitations=["Source code was not reviewed."],
+    )
+    return AIReport(**(fields | overrides))

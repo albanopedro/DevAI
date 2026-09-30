@@ -1,8 +1,12 @@
 """Render analysis results as human-readable terminal text."""
 
+import textwrap
+
+from devai.ai.result import AIResult
 from devai.models import CheckReport, Finding, Manifest, ProjectInfo, TestSummary
 
 SEPARATOR = "─" * 36
+TEXT_WIDTH = 88
 
 
 def format_report(info: ProjectInfo, checks: CheckReport) -> str:
@@ -135,3 +139,57 @@ def plural(count: int, word: str) -> str:
 
 def yes_no(value: bool) -> str:
     return "yes" if value else "no"
+
+
+def format_ai_section(result: AIResult) -> str:
+    """Render the AI's report. Every string in it is model output: untrusted."""
+    report = result.report
+    lines = [f"AI ANALYSIS ({printable(result.model)})", SEPARATOR, "Summary:"]
+    lines += wrap(report.summary, "  ")
+
+    lines += ["", "Risks:"]
+    for risk in report.risks:
+        lines.append(f"  ⚠ {risk.severity.upper():<6}  {printable(risk.title)}")
+        lines += wrap(risk.explanation, " " * 12)
+        if risk.related_rule:
+            lines.append(f"{'':12}related finding: {printable(risk.related_rule)}")
+    if not report.risks:
+        lines.append("  none")
+
+    lines += ["", "Recommendations:"]
+    for number, item in enumerate(report.recommendations, start=1):
+        lines.append(f"  {number}. {printable(item.title)} [{item.effort} effort]")
+        lines += wrap(item.rationale, "     ")
+    if not report.recommendations:
+        lines.append("  none")
+
+    lines += ["", "Limitations:"]
+    for limitation in report.limitations:
+        lines += wrap(limitation, "  - ", "    ")
+    if not report.limitations:
+        lines.append("  none")
+
+    usage = result.usage
+    lines += [
+        "",
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI from a summary of the project, without reading its code.",
+    ]
+    return "\n".join(lines)
+
+
+def wrap(text: str, indent: str, subsequent_indent: str | None = None) -> list[str]:
+    return textwrap.wrap(
+        printable(text),
+        width=TEXT_WIDTH,
+        initial_indent=indent,
+        subsequent_indent=indent if subsequent_indent is None else subsequent_indent,
+    )
+
+
+def printable(text: str) -> str:
+    """Replace control characters (newlines, ANSI escape codes...) with spaces.
+
+    Model output is untrusted: an escape sequence could rewrite the terminal.
+    """
+    return "".join(char if char.isprintable() else " " for char in text)

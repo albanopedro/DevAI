@@ -7,16 +7,19 @@ from pathlib import Path
 
 from devai import __version__
 from devai.ai import build_context, estimate_tokens, serialize_context
+from devai.ai.result import AIError, AIResult, LLMClient
+from devai.ai.settings import AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
 from devai.checks import run_checks
 from devai.json_report import to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
-from devai.report import SEPARATOR, format_report
+from devai.report import SEPARATOR, format_ai_section, format_report
 
 # Same convention as linters such as ruff and eslint (D022).
 EXIT_OK = 0
 EXIT_FINDINGS = 1  # findings at or above the --fail-on level
 EXIT_USAGE = 2  # no command, bad path or invalid argument (argparse uses 2 too)
+EXIT_AI_ERROR = 3  # the AI step failed; the deterministic report was still printed
 
 FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 
@@ -54,15 +57,26 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--ai",
         action="store_true",
-        help="add an AI analysis (sends a summary, never code; see README)",
+        help="add an AI analysis by Claude: sends a project summary, never code, "
+        "and asks first (see README)",
     )
     analyze.add_argument(
         "--dry-run",
         action="store_true",
         help="with --ai: show exactly what would be sent, without sending it",
     )
+    analyze.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="with --ai: send without asking (required when not in a terminal)",
+    )
 
     return parser
+
+
+class SetupError(Exception):
+    """AI analysis can't start (missing extra, no terminal to confirm...)."""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,41 +84,113 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "analyze":
-        if args.dry_run and not args.ai:
-            parser.error("--dry-run requires --ai")  # exits with code 2
-        if args.ai and not args.dry_run:
-            print(
-                "devai: error: AI analysis is not available yet (Phase 3b). "
-                "Use --ai --dry-run to preview what would be sent.",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
-        return run_analyze(Path(args.path), args.format, args.fail_on, args.dry_run)
-
-    parser.print_help()
-    return EXIT_USAGE
+    if args.command != "analyze":
+        parser.print_help()
+        return EXIT_USAGE
+    if args.dry_run and not args.ai:
+        parser.error("--dry-run requires --ai")  # exits with code 2
+    if args.yes and not args.ai:
+        parser.error("--yes requires --ai")
+    return run_analyze(args)
 
 
-def run_analyze(
-    path: Path, output_format: str, fail_on: str, ai_dry_run: bool = False
-) -> int:
+def run_analyze(args: argparse.Namespace) -> int:
+    path = Path(args.path)
     try:
         info = analyze_project(path)
     except NotADirectoryError:
-        print(f"devai: error: not a directory: {path}", file=sys.stderr)
+        print_error(f"not a directory: {path}")
         return EXIT_USAGE
 
     checks = run_checks(info)
-    if ai_dry_run:
-        print(format_ai_preview(info, checks, output_format))
+    if args.ai and args.dry_run:
+        print(format_ai_preview(info, checks, args.format))
         return EXIT_OK  # inspecting the context never fails the run
 
-    if output_format == "json":
-        print(to_json(info, checks))
+    ai: tuple[LLMClient, AISettings] | None = None
+    if args.ai:
+        try:
+            ai = prepare_ai(assume_yes=args.yes)
+        except (SettingsError, SetupError) as problem:
+            print_error(str(problem))
+            return EXIT_USAGE  # nothing was analyzed or sent yet
+
+    ai_result, ai_failed = None, False
+    if args.format == "json":
+        if ai:
+            ai_result, ai_failed = run_ai(*ai, build_context(info, checks), args.yes)
+        print(to_json(info, checks, ai_result))
     else:
+        # Show the report first: the user sees what is summarized before deciding.
         print(format_report(info, checks))
-    return EXIT_FINDINGS if should_fail(checks.findings, fail_on) else EXIT_OK
+        if ai:
+            ai_result, ai_failed = run_ai(*ai, build_context(info, checks), args.yes)
+        if ai_result:
+            print()
+            print(format_ai_section(ai_result))
+
+    if ai_failed:
+        return EXIT_AI_ERROR
+    # The AI's opinion never affects --fail-on: CI must be deterministic (D028).
+    return EXIT_FINDINGS if should_fail(checks.findings, args.fail_on) else EXIT_OK
+
+
+def prepare_ai(assume_yes: bool) -> tuple[LLMClient, AISettings]:
+    settings = load_settings()
+    if not assume_yes and not is_interactive():
+        raise SetupError(
+            "--ai needs your confirmation before sending data. Run it in a "
+            "terminal, or add --yes to confirm."
+        )
+    return create_ai_client(settings), settings
+
+
+def create_ai_client(settings: AISettings) -> LLMClient:
+    try:
+        # Imported here: the SDK is an optional extra (pip install 'devai[ai]').
+        from devai.ai.client import AnthropicClient
+    except ImportError as error:
+        raise SetupError(
+            "AI support is not installed. Install it with: pip install 'devai[ai]'"
+        ) from error
+    return AnthropicClient(settings)
+
+
+def run_ai(
+    client: LLMClient, settings: AISettings, context: dict, assume_yes: bool
+) -> tuple[AIResult | None, bool]:
+    """Ask for consent, then call the model. Returns (result, failed)."""
+    tokens = estimate_tokens(serialize_context(context))
+    if not assume_yes and not confirm_sending(settings.model, tokens):
+        print("devai: AI analysis skipped. Nothing was sent.", file=sys.stderr)
+        return None, False
+
+    print(f"Analyzing with {settings.model}…", file=sys.stderr, flush=True)
+    try:
+        return client.analyze(context), False
+    except AIError as problem:
+        print_error(f"AI analysis failed: {problem}")
+        return None, True
+
+
+def is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def confirm_sending(model: str, tokens: int) -> bool:
+    """Ask on stderr, so stdout stays clean for the report or JSON."""
+    print(
+        f"Send a project summary (~{tokens:,} tokens, no source code) to Anthropic "
+        f"({model})? Preview it with --dry-run. [y/N] ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
+    return sys.stdin.readline().strip().lower() in {"y", "yes"}
+
+
+def print_error(message: str) -> None:
+    print(f"devai: error: {message}", file=sys.stderr)
 
 
 def should_fail(findings: tuple[Finding, ...], fail_on: str) -> bool:
