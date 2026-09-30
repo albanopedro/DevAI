@@ -33,3 +33,12 @@ def build_user_message(context_json: str) -> str:
         "Analyze this project summary.\n\n"
         f"<project_context>\n{context_json}\n</project_context>"
     )
+
+
+def schema_instructions(schema_json: str) -> str:
+    """Restate the answer schema in the prompt.
+
+    Ollama's docs recommend this in addition to the `format` parameter: it
+    grounds smaller models. The schema is DevAI's own, not project data.
+    """
+    return f"\n\nAnswer with JSON that follows this schema:\n{schema_json}"

@@ -284,8 +284,9 @@ def fake_ai(monkeypatch):
     client = FakeLLMClient()
     monkeypatch.setattr(cli, "create_ai_client", lambda settings: client)
     monkeypatch.setattr(cli, "is_interactive", lambda: False)
-    for variable in ["DEVAI_AI_MODEL", "DEVAI_AI_EFFORT"]:
+    for variable in ["DEVAI_AI_MODEL", "DEVAI_AI_EFFORT", "DEVAI_AI_PROVIDER"]:
         monkeypatch.delenv(variable, raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     return client
 
 
@@ -392,7 +393,7 @@ def test_fail_on_ignores_the_ai_opinion(tmp_path, capsys, fake_ai):
 
 def test_missing_ai_extra_explains_how_to_install(tmp_path, capsys, monkeypatch):
     monkeypatch.setitem(sys.modules, "anthropic", None)  # makes `import anthropic` fail
-    monkeypatch.delitem(sys.modules, "devai.ai.client", raising=False)
+    monkeypatch.delitem(sys.modules, "devai.ai.anthropic_client", raising=False)
 
     assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_USAGE
     assert "pip install 'devai[ai]'" in capsys.readouterr().err
@@ -417,3 +418,68 @@ def test_ai_text_is_stripped_of_control_characters(tmp_path, capsys, fake_ai):
     out = capsys.readouterr().out
     assert "\x1b" not in out
     assert "Looks fine [2J [31m and more new line" in out  # each control char → space
+
+
+# --- providers (Phase 3.5) ---------------------------------------------------
+
+
+def test_local_ollama_runs_without_asking(tmp_path, capsys, fake_ai):
+    # Not a terminal and no --yes: fine, because nothing leaves the machine.
+    assert main(["analyze", str(tmp_path), "--ai", "--provider", "ollama"]) == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert len(fake_ai.contexts) == 1
+    assert "[y/N]" not in captured.err
+    assert "Analyzing locally with qwen3.5:9b (nothing leaves this machine)" in (
+        captured.err
+    )
+
+
+def test_provider_can_come_from_the_environment(tmp_path, capsys, fake_ai, monkeypatch):
+    monkeypatch.setenv("DEVAI_AI_PROVIDER", "ollama")
+
+    assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_OK
+    assert "Analyzing locally" in capsys.readouterr().err
+
+
+def test_remote_ollama_needs_consent(tmp_path, capsys, fake_ai, monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "gpu-box")
+
+    assert main(["analyze", str(tmp_path), "--ai", "--provider", "ollama"]) == 2
+
+    assert fake_ai.contexts == []
+    assert "Ollama at http://gpu-box:11434" in capsys.readouterr().err
+
+
+def test_remote_ollama_asks_like_anthropic(tmp_path, capsys, fake_ai, monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "gpu-box")
+    answer(monkeypatch, "n\n")
+
+    main(["analyze", str(tmp_path), "--ai", "--provider", "ollama"])
+
+    assert fake_ai.contexts == []
+    assert "to Ollama at http://gpu-box:11434 (qwen3.5:9b)? " in capsys.readouterr().err
+
+
+def test_provider_requires_ai(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["analyze", str(tmp_path), "--provider", "ollama"])
+
+    assert exit_info.value.code == EXIT_USAGE
+
+
+def test_create_ai_client_picks_the_provider():
+    pytest.importorskip("pydantic")  # the [ollama] or [ai] extra
+    from devai.ai.ollama_client import OllamaClient
+    from devai.ai.settings import AISettings
+
+    assert isinstance(cli.create_ai_client(AISettings(provider="ollama")), OllamaClient)
+
+
+def test_missing_ollama_extra_explains_how_to_install(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    for module in ["devai.ai.ollama_client", "devai.ai.schema"]:
+        monkeypatch.delitem(sys.modules, module, raising=False)
+
+    assert main(["analyze", str(tmp_path), "--ai", "--provider", "ollama"]) == 2
+    assert "pip install 'devai[ollama]'" in capsys.readouterr().err

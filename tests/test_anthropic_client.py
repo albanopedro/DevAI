@@ -7,7 +7,7 @@ import pydantic
 import pytest
 from conftest import fake_ai_report
 
-from devai.ai.client import FALLBACK_BETA, MAX_OUTPUT_TOKENS, AnthropicClient
+from devai.ai.anthropic_client import FALLBACK_BETA, MAX_OUTPUT_TOKENS, AnthropicClient
 from devai.ai.context import serialize_context
 from devai.ai.prompt import SYSTEM_PROMPT, build_user_message
 from devai.ai.result import AIError, AIUsage

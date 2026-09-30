@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 3b: AI analysis).
+> **Status:** early development (Phase 3.5: local AI with Ollama).
 
 ## Goal
 
@@ -26,7 +26,8 @@ Requires Python 3.11+.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"        # DevAI + test tools (only dependency: pathspec)
-pip install -e ".[dev,ai]"     # also the optional AI analysis (Anthropic SDK)
+pip install -e ".[dev,ai]"     # also AI analysis with Claude (Anthropic SDK)
+pip install -e ".[dev,ollama]" # or only local AI with Ollama (adds Pydantic)
 ```
 
 ## Usage
@@ -168,6 +169,21 @@ How it works:
 - **The deterministic report always comes first.** If the AI step fails, you still get it, and the exit code is `3`.
 - Data sent to Anthropic is subject to Anthropic's data usage and retention policies.
 
+#### Local AI with Ollama
+
+The same analysis can run on a model on your own computer through [Ollama](https://ollama.com): free, and nothing leaves the machine.
+
+```bash
+pip install -e ".[ollama]"                    # or [ai], which also includes it
+ollama pull qwen3.5:9b                        # default model, 6.6 GB
+devai analyze --ai --provider ollama          # or: export DEVAI_AI_PROVIDER=ollama
+```
+
+- **Same data, same format.** Ollama gets the same system prompt and context as Claude (see "What is sent"), plus the answer schema, and must answer in the same validated structure.
+- **Consent follows the data.** With Ollama on this computer (`localhost`, `127.0.0.1`, `::1`), DevAI doesn't ask, because nothing leaves the machine. If `OLLAMA_HOST` points to another computer, DevAI asks exactly as it does for Anthropic.
+- **Settings:** `DEVAI_AI_MODEL` picks the model (try `qwen3.5:4b`, 3.4 GB, for speed). `OLLAMA_HOST` follows Ollama's own rules (default `http://localhost:11434`). `DEVAI_AI_EFFORT` applies to Anthropic only.
+- Small local models are slower and less insightful than Claude. The answer format is guaranteed; the depth is not.
+
 #### What is sent
 
 | Sent | Never sent |
@@ -209,7 +225,8 @@ src/devai/
 │   ├── context.py    # what an AI may receive: allow-list, size caps
 │   ├── prompt.py     # fixed system prompt, delimited user message
 │   ├── schema.py     # AIReport: the structure the model must answer with
-│   ├── client.py     # the only code that calls an external service
+│   ├── anthropic_client.py  # Claude via the Anthropic SDK
+│   ├── ollama_client.py     # local models via Ollama's HTTP API (urllib)
 │   ├── result.py     # AIResult, AIError, LLMClient interface (no dependencies)
 │   └── settings.py   # DEVAI_AI_MODEL / DEVAI_AI_EFFORT
 ├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
@@ -242,7 +259,7 @@ tests/
 | 2c | Findings | `Finding` model, first checks (missing tests, exposed `.env`, secrets), `--format json`, exit codes |
 | 3a | AI Context Builder | Allow-listed, size-capped context; `--ai --dry-run` preview, no network |
 | 3b | AI Analysis | `--ai`: consent, Claude call, validated structured report, LLM client interface |
-| 3.5 | Local AI | Ollama provider behind the same interface |
+| 3.5 | Local AI | `--provider ollama`: same context and report, local model, consent only when data leaves the machine |
 | 4 | Code Review | `devai review`: analyze `git diff` |
 | 5 | Contextual Chat | `devai chat` |
 | 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |

@@ -8,7 +8,7 @@ from pathlib import Path
 from devai import __version__
 from devai.ai import build_context, estimate_tokens, serialize_context
 from devai.ai.result import AIError, AIResult, LLMClient
-from devai.ai.settings import AISettings, SettingsError, load_settings
+from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
 from devai.checks import run_checks
 from devai.json_report import to_json
@@ -71,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --ai: send without asking (required when not in a terminal)",
     )
+    analyze.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        help="with --ai: anthropic (default) or ollama for a local model; "
+        "overrides DEVAI_AI_PROVIDER",
+    )
 
     return parser
 
@@ -91,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--dry-run requires --ai")  # exits with code 2
     if args.yes and not args.ai:
         parser.error("--yes requires --ai")
+    if args.provider and not args.ai:
+        parser.error("--provider requires --ai")
     return run_analyze(args)
 
 
@@ -110,7 +118,7 @@ def run_analyze(args: argparse.Namespace) -> int:
     ai: tuple[LLMClient, AISettings] | None = None
     if args.ai:
         try:
-            ai = prepare_ai(assume_yes=args.yes)
+            ai = prepare_ai(assume_yes=args.yes, provider=args.provider)
         except (SettingsError, SetupError) as problem:
             print_error(str(problem))
             return EXIT_USAGE  # nothing was analyzed or sent yet
@@ -135,37 +143,53 @@ def run_analyze(args: argparse.Namespace) -> int:
     return EXIT_FINDINGS if should_fail(checks.findings, args.fail_on) else EXIT_OK
 
 
-def prepare_ai(assume_yes: bool) -> tuple[LLMClient, AISettings]:
-    settings = load_settings()
-    if not assume_yes and not is_interactive():
+def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:
+    settings = load_settings(provider=provider)
+    if settings.leaves_machine and not assume_yes and not is_interactive():
         raise SetupError(
-            "--ai needs your confirmation before sending data. Run it in a "
-            "terminal, or add --yes to confirm."
+            f"--ai needs your confirmation before sending data to "
+            f"{settings.destination}. Run it in a terminal, or add --yes to confirm."
         )
     return create_ai_client(settings), settings
 
 
 def create_ai_client(settings: AISettings) -> LLMClient:
+    # Imported here: AI support is an optional extra.
     try:
-        # Imported here: the SDK is an optional extra (pip install 'devai[ai]').
-        from devai.ai.client import AnthropicClient
+        if settings.provider == "ollama":
+            from devai.ai.ollama_client import OllamaClient
+
+            return OllamaClient(settings)
+        from devai.ai.anthropic_client import AnthropicClient
+
+        return AnthropicClient(settings)
     except ImportError as error:
+        extra = "ollama" if settings.provider == "ollama" else "ai"
+        install = f"pip install 'devai[{extra}]'"
         raise SetupError(
-            "AI support is not installed. Install it with: pip install 'devai[ai]'"
+            f"AI support is not installed. Install it with: {install}"
         ) from error
-    return AnthropicClient(settings)
 
 
 def run_ai(
     client: LLMClient, settings: AISettings, context: dict, assume_yes: bool
 ) -> tuple[AIResult | None, bool]:
-    """Ask for consent, then call the model. Returns (result, failed)."""
-    tokens = estimate_tokens(serialize_context(context))
-    if not assume_yes and not confirm_sending(settings.model, tokens):
-        print("devai: AI analysis skipped. Nothing was sent.", file=sys.stderr)
-        return None, False
+    """Ask for consent if data leaves the machine, then call the model.
 
-    print(f"Analyzing with {settings.model}…", file=sys.stderr, flush=True)
+    Returns (result, failed).
+    """
+    tokens = estimate_tokens(serialize_context(context))
+    if settings.leaves_machine:
+        if not assume_yes and not confirm_sending(settings.destination, tokens):
+            print("devai: AI analysis skipped. Nothing was sent.", file=sys.stderr)
+            return None, False
+        progress = f"Analyzing with {settings.model}…"
+    else:
+        progress = (
+            f"Analyzing locally with {settings.model} (nothing leaves this machine)…"
+        )
+
+    print(progress, file=sys.stderr, flush=True)
     try:
         return client.analyze(context), False
     except AIError as problem:
@@ -177,11 +201,11 @@ def is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def confirm_sending(model: str, tokens: int) -> bool:
+def confirm_sending(destination: str, tokens: int) -> bool:
     """Ask on stderr, so stdout stays clean for the report or JSON."""
     print(
-        f"Send a project summary (~{tokens:,} tokens, no source code) to Anthropic "
-        f"({model})? Preview it with --dry-run. [y/N] ",
+        f"Send a project summary (~{tokens:,} tokens, no source code) to "
+        f"{destination}? Preview it with --dry-run. [y/N] ",
         end="",
         file=sys.stderr,
         flush=True,

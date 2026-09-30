@@ -6,9 +6,13 @@ from pathlib import Path
 
 import pytest
 
-# Tests of the Anthropic client need the optional [ai] extra; without it,
-# pytest doesn't collect them (the rest of DevAI must work without the extra).
-collect_ignore = [] if importlib.util.find_spec("anthropic") else ["test_ai_client.py"]
+# AI client tests need an optional extra ([ai] or [ollama]); without it, pytest
+# doesn't collect them. The rest of DevAI must work without any extra.
+collect_ignore = []
+if importlib.util.find_spec("anthropic") is None:
+    collect_ignore.append("test_anthropic_client.py")
+if importlib.util.find_spec("pydantic") is None:
+    collect_ignore.append("test_ollama_client.py")
 
 
 def make_files(root: Path, *relative_paths: str) -> None:

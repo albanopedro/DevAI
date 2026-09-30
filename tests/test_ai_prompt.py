@@ -10,6 +10,7 @@ from devai.ai.settings import (
     AISettings,
     SettingsError,
     load_settings,
+    ollama_base_url,
 )
 
 
@@ -67,3 +68,74 @@ def test_empty_values_fall_back_to_defaults():
 def test_invalid_effort_is_rejected():
     with pytest.raises(SettingsError, match="DEVAI_AI_EFFORT must be one of"):
         load_settings({"DEVAI_AI_EFFORT": "extreme"})
+
+
+# --- providers ---------------------------------------------------------------
+
+
+def test_default_provider_is_anthropic():
+    settings = load_settings({})
+
+    assert settings.provider == "anthropic"
+    assert settings.leaves_machine is True
+    assert settings.destination == "Anthropic (claude-opus-5-5)"
+
+
+def test_ollama_has_its_own_default_model():
+    settings = load_settings({"DEVAI_AI_PROVIDER": "ollama"})
+
+    assert settings.provider == "ollama"
+    assert settings.model == "qwen3.5:9b"
+    assert settings.ollama_host == "http://localhost:11434"
+
+
+def test_provider_argument_wins_over_environment():
+    environ = {"DEVAI_AI_PROVIDER": "anthropic"}
+
+    assert load_settings(environ, provider="ollama").provider == "ollama"
+
+
+def test_invalid_provider_is_rejected():
+    with pytest.raises(SettingsError, match="DEVAI_AI_PROVIDER must be one of"):
+        load_settings({"DEVAI_AI_PROVIDER": "gpt"})
+
+
+@pytest.mark.parametrize(
+    ("value", "url"),
+    [
+        ("", "http://localhost:11434"),
+        ("localhost", "http://localhost:11434"),
+        ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+        ("gpu-box", "http://gpu-box:11434"),
+        ("http://gpu-box", "http://gpu-box:80"),  # same rules as Ollama itself
+        ("https://ollama.example.com", "https://ollama.example.com:443"),
+        ("[::1]:11434", "http://[::1]:11434"),
+    ],
+)
+def test_ollama_host_is_normalized_like_ollama(value, url):
+    assert ollama_base_url(value) == url
+
+
+@pytest.mark.parametrize("value", ["ftp://gpu-box", "localhost:abc", "http://"])
+def test_invalid_ollama_host_is_rejected(value):
+    with pytest.raises(SettingsError, match="OLLAMA_HOST"):
+        ollama_base_url(value)
+
+
+@pytest.mark.parametrize(
+    ("host", "leaves"),
+    [
+        ("localhost", False),
+        ("127.0.0.1", False),
+        ("127.0.0.1:8080", False),
+        ("[::1]:11434", False),
+        ("0.0.0.0", False),
+        ("gpu-box", True),  # a name may point to any machine
+        ("192.168.1.10", True),
+        ("https://ollama.example.com", True),
+    ],
+)
+def test_ollama_consent_depends_on_where_data_goes(host, leaves):
+    settings = load_settings({"DEVAI_AI_PROVIDER": "ollama", "OLLAMA_HOST": host})
+
+    assert settings.leaves_machine is leaves

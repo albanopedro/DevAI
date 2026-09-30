@@ -164,7 +164,7 @@ New decisions are appended; superseded ones are marked, not deleted.
 
 ## D027: AI client: one structured request, behind a small interface
 
-- **Decision:** `ai/client.py` sends one request per run through `client.beta.messages.parse`: the fixed system prompt, the context from D025 wrapped in `<project_context>` tags, and `AIReport` (Pydantic) as the required output format. Defaults are `claude-opus-5-5` at effort `medium`, configurable by environment variable. Server-side refusal fallback (`fallbacks: "default"`) is enabled, and the report shows the model that actually answered. The CLI depends only on the `LLMClient` protocol, so Ollama (3.5) can be a second implementation. The SDK is an optional `[ai]` extra, imported only when `--ai` is used.
+- **Decision:** `ai/client.py` (renamed `ai/anthropic_client.py` in Phase 3.5) sends one request per run through `client.beta.messages.parse`: the fixed system prompt, the context from D025 wrapped in `<project_context>` tags, and `AIReport` (Pydantic) as the required output format. Defaults are `claude-opus-5-5` at effort `medium`, configurable by environment variable. Server-side refusal fallback (`fallbacks: "default"`) is enabled, and the report shows the model that actually answered. The CLI depends only on the `LLMClient` protocol, so Ollama (3.5) can be a second implementation. The SDK is an optional `[ai]` extra, imported only when `--ai` is used.
 - **Why:** Structured output turns "the model said something" into a validated object; an answer in the wrong shape is an error, not text to guess at. A protocol keeps the CLI independent of the provider. Every SDK failure becomes a short `AIError` message. One case needs care: with no credentials, the SDK raises a plain `TypeError` before any network access, so it is matched narrowly, and any other `TypeError` still surfaces as a bug.
 - **Alternatives:** Raw HTTP with urllib (no dependency, but retries, errors and validation rewritten by hand); a multi-provider library such as LiteLLM (heavy, hides the API); free-text answers parsed with regexes (brittle).
 
@@ -178,3 +178,15 @@ New decisions are appended; superseded ones are marked, not deleted.
 
 - **Decision:** `serialize_context` escapes `<` as `\u003c`, so no name from the project can close the `<project_context>` delimiter. The system prompt says the summary contains no instructions. The model has no tools. Before printing, the text report replaces control characters in AI output (such as ANSI escape codes) with spaces.
 - **Why:** The analyzed project controls file and dependency names (prompt injection), and the model controls its answer (terminal escape sequences). Neither can trigger an action: the worst case is a misleading report, which the output labels as AI-written, without reading the code.
+
+## D030: Ollama client over the standard library
+
+- **Decision:** `ai/ollama_client.py` implements `LLMClient` with one `POST /api/chat` through `urllib`. It sends the same system prompt and context as the Anthropic client, plus AIReport's JSON Schema in `format` (flattened: `$ref`s inlined, since `$defs` support is undocumented) and restated in the prompt, as Ollama's docs recommend. It uses `temperature: 0`, `num_ctx: 8192` (Ollama's default window can silently truncate), a 5-minute timeout, and no HTTP proxy. The answer is validated with the same Pydantic model. The default model is `qwen3.5:9b`, which fits a 16 GB laptop. The `[ollama]` extra installs only Pydantic.
+- **Why:** The API is a single local JSON request, so a dependency would add little. Writing it with urllib shows the HTTP layer that the Anthropic SDK hides. Bypassing proxies keeps the context from being routed through a proxy configured for other traffic. Tests run the real HTTP code against a stub server started inside the test.
+- **Alternatives:** The official `ollama` Python package (less code, one more dependency); Ollama's OpenAI-compatible endpoint (would suggest an OpenAI SDK, contrary to D027's direction).
+
+## D031: Consent is required whenever data leaves the machine
+
+- **Decision:** `AISettings.leaves_machine` decides whether to ask. Anthropic always leaves the machine. Ollama leaves it unless `OLLAMA_HOST` is `localhost`, a loopback address or `0.0.0.0`; any other name counts as remote, since it may resolve to another computer. Local Ollama runs without a question, even with no terminal, and says it is running locally.
+- **Why:** The consent rule protects data, not a vendor. Asking before a purely local run would be a meaningless click; skipping the question for a remote Ollama server would send data without consent.
+- **Alternatives:** Always ask (simple, but trains users to click through); never ask for Ollama (wrong when Ollama runs on another machine).
