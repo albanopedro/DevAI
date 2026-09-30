@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 4a: local review of git changes).
+> **Status:** early development (Phase 4b: AI review context).
 
 ## Goal
 
@@ -174,6 +174,21 @@ How it reads your changes:
 - **The report never contains your code**: only file names, line counts and findings, in text and JSON.
 - `--format json` and `--fail-on` work as in `analyze`. Outside a git repository, or with an unknown `--base`, the exit code is `2`.
 
+#### AI review: what would be sent
+
+An AI review of the changed code is being built in two steps. **Phase 4b** (current) builds the package and lets you inspect it: `devai review --ai --dry-run` shows exactly which code would be sent, makes no network call, and estimates the size. **Phase 4c** will send it, for free, to OpenCode's free models or a local Ollama, after asking.
+
+| Sent | Never sent |
+|---|---|
+| Which changes (working tree, staged, or since a base) | Whole files, or files that didn't change |
+| Changed file names, statuses and line counts | A real `.env`, lock, minified, binary, symlinked or large file |
+| The review findings (masked evidence) | Secrets: every line matching a secret pattern is replaced, whole, with `[redacted: possible secret (AKIA…)]` |
+| **Changed hunks** of allowed files: added and removed lines, with up to 3 lines of context | Absolute paths, deleted files' code |
+
+- Redaction covers added, removed **and** context lines, and applies the broad credential rule even in test files: hiding a line costs little, sending a secret can't be undone.
+- Limits: 20 files with hunks, 200 lines per file, about 20,000 characters in total. Every changed file stays listed with the reason its code isn't included (`deleted`, `not read (privacy or size rules)`, `not included (size limit)`), and cuts are recorded under `truncated`.
+- Code comes from the reviewed project and is untrusted: a comment saying "ignore your instructions" is data. `<` is escaped, so nothing in the code can close the prompt's delimiter.
+
 ### AI analysis
 
 `devai analyze --ai` adds an AI analysis: a summary, risks, prioritized recommendations, and the limits of what it could judge. **It is always free.** There are two providers:
@@ -262,7 +277,8 @@ src/devai/
     └── secrets.py         # secret patterns, file skipping, masking
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
-    └── checks.py          # secrets, .env, tests, debug statements, size
+    ├── checks.py          # secrets, .env, tests, debug statements, size
+    └── context.py         # what an AI review may receive: hunks, redaction, limits
 tests/
 ```
 
@@ -281,7 +297,8 @@ tests/
 | 3.5 | Local AI | `--provider ollama`: same context and report, local model, consent only when data leaves the machine |
 | 3.6 | Free AI only | OpenCode free models via the `opencode` CLI (default); Anthropic removed; paid models refused |
 | 4a | Local Review | `devai review`: secrets, `.env`, tests, debug leftovers and size in the current git changes; no AI |
-| 4b | AI Review | Free AI review of the changed code (OpenCode free models or Ollama), with its own privacy boundary |
+| 4b | AI Review Context | Allow-listed hunks with secrets redacted and size limits; `review --ai --dry-run`, no network |
+| 4c | AI Review | Free AI review of the changed code (OpenCode free models or Ollama), consent listing the files |
 | 5 | Contextual Chat | `devai chat` |
 | 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |
 | 7 | Test Generation | `devai test` |

@@ -615,3 +615,52 @@ def test_review_staged_and_base_are_exclusive(repo, capsys):
         main(["review", str(repo), "--staged", "--base", "main"])
 
     assert exit_info.value.code == EXIT_USAGE
+
+
+# --- review --ai (Phase 4b: dry run only) ----------------------------------------
+
+
+def test_review_ai_dry_run_lists_what_would_be_sent(repo, capsys):
+    write(repo, "app.py", "def main():\n    return 2\n")
+    write(repo, ".env", "SECRET=1\n")
+
+    assert main(["review", str(repo), "--ai", "--dry-run"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert out.startswith("AI REVIEW CONTEXT PREVIEW (dry run: nothing was sent)\n")
+    assert "Code from these files would be sent (changed hunks only):\n" in out
+    assert "  app.py  4 lines\n" in out  # header, context, removed, added
+    assert "Not sent:\n  .env  not read (privacy or size rules)\n" in out
+    assert "lines redacted" in out
+
+
+def test_review_ai_dry_run_json_is_the_context_only(repo, capsys):
+    write(repo, "app.py", "changed\n")
+
+    main(["review", str(repo), "--ai", "--dry-run", "--format", "json"])
+
+    assert json.loads(capsys.readouterr().out)["review_context_version"] == 1
+
+
+def test_review_ai_dry_run_makes_no_network_calls(repo, capsys, monkeypatch):
+    import socket
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    write(repo, "app.py", "changed\n")
+
+    assert main(["review", str(repo), "--ai", "--dry-run"]) == EXIT_OK
+
+
+def test_review_ai_without_dry_run_is_not_available_yet(repo, capsys):
+    assert main(["review", str(repo), "--ai"]) == EXIT_USAGE
+    assert "Phase 4c" in capsys.readouterr().err
+
+
+def test_review_dry_run_requires_ai(repo, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["review", str(repo), "--dry-run"])
+
+    assert exit_info.value.code == EXIT_USAGE

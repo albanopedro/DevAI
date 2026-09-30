@@ -13,8 +13,21 @@ from devai.analyzer import analyze_project
 from devai.checks import run_checks
 from devai.json_report import review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
-from devai.report import SEPARATOR, format_ai_section, format_report, format_review
-from devai.review import ReviewError, review_changes
+from devai.report import (
+    SEPARATOR,
+    format_ai_section,
+    format_report,
+    format_review,
+    printable,
+)
+from devai.review import (
+    Changes,
+    ReviewError,
+    collect_changes,
+    review_report,
+    run_review_checks,
+)
+from devai.review.context import build_review_context
 
 # Same convention as linters such as ruff and eslint (D022).
 EXIT_OK = 0
@@ -87,6 +100,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="committed changes since the branch left REF, like a pull request",
     )
     add_output_options(review)
+    review.add_argument(
+        "--ai",
+        action="store_true",
+        help="AI review of the changed code (Phase 4c); for now use it with --dry-run",
+    )
+    review.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --ai: show exactly what code would be sent, without sending it",
+    )
 
     return parser
 
@@ -118,6 +141,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "review":
+        if args.dry_run and not args.ai:
+            parser.error("--dry-run requires --ai")
+        if args.ai and not args.dry_run:
+            print_error(
+                "AI review is not available yet (Phase 4c). "
+                "Use --ai --dry-run to preview what would be sent."
+            )
+            return EXIT_USAGE
         return run_review(args)
     if args.command != "analyze":
         parser.print_help()
@@ -175,7 +206,7 @@ def run_analyze(args: argparse.Namespace) -> int:
 def run_review(args: argparse.Namespace) -> int:
     path = Path(args.path)
     try:
-        report = review_changes(path, staged=args.staged, base=args.base)
+        changes = collect_changes(path, staged=args.staged, base=args.base)
     except NotADirectoryError:
         print_error(f"not a directory: {path}")
         return EXIT_USAGE
@@ -183,6 +214,12 @@ def run_review(args: argparse.Namespace) -> int:
         print_error(str(problem))
         return EXIT_USAGE
 
+    checks = run_review_checks(changes)
+    if args.ai and args.dry_run:
+        print(format_review_ai_preview(changes, checks, args.format))
+        return EXIT_OK  # inspecting the context never fails the run
+
+    report = review_report(changes, checks)
     if args.format == "json":
         print(review_to_json(report))
     else:
@@ -292,3 +329,43 @@ def format_ai_preview(
             f"(~{estimate_tokens(compact):,} tokens, estimated)",
         ]
     )
+
+
+def format_review_ai_preview(
+    changes: Changes, checks: CheckReport, output_format: str
+) -> str:
+    """Show the code an AI review would receive, exactly. Makes no network call."""
+    context = build_review_context(changes, checks)
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+
+    compact = serialize_context(context)
+    included = {diff["path"]: len(diff["lines"]) for diff in context["diffs"]}
+    not_sent = [
+        (file["path"], file["diff"])
+        for file in context["files"]
+        if file["diff"] not in ("included", "no changed lines")
+    ]
+    lines = ["AI REVIEW CONTEXT PREVIEW (dry run: nothing was sent)", SEPARATOR]
+    if included:
+        width = max(len(printable(path)) for path in included)
+        lines.append("Code from these files would be sent (changed hunks only):")
+        lines += [
+            f"  {printable(path):<{width}}  {count} lines"
+            for path, count in included.items()
+        ]
+    else:
+        lines.append("No code would be sent.")
+    if not_sent:
+        width = max(len(printable(path)) for path, _ in not_sent)
+        lines.append("Not sent:")
+        lines += [f"  {printable(path):<{width}}  {why}" for path, why in not_sent]
+    lines += [
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)

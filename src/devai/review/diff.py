@@ -39,6 +39,7 @@ class Changes:
         default_factory=dict
     )
     skipped: tuple[PurePosixPath, ...] = ()  # changed files whose content wasn't read
+    range_args: tuple[str, ...] = ()  # the `git diff` arguments that selected them
 
 
 def collect_changes(
@@ -89,6 +90,7 @@ def collect_changes(
         files=tuple(sorted(files, key=lambda file: str(file.path))),
         added_lines=added_lines,
         skipped=tuple(sorted(skipped, key=str)),
+        range_args=tuple(range_args),
     )
 
 
@@ -235,3 +237,51 @@ def untracked_file(
         for number, line in enumerate(lines, start=1)
     )
     return ChangedFile(path, "A", len(added), 0, untracked=True), added
+
+
+def review_diff_lines(changes: Changes, file: ChangedFile) -> list[str] | None:
+    """The changed hunks of `file` as unified-diff lines, for an AI review.
+
+    Unlike added_lines, this includes removed lines and up to 3 lines of
+    context, so a reviewer can see what changed. Returns None when the file
+    must not be read (privacy rules), is binary, or was deleted.
+    """
+    if file.status == "D" or file.additions is None:
+        return None
+    if file.untracked:
+        added = changes.added_lines.get(file.path)
+        if added is None:
+            return None
+        return [f"@@ -0,0 +1,{len(added)} @@"] + [f"+{line.text}" for line in added]
+    if not may_read(changes.root, file.path):
+        return None
+
+    paths = [str(file.path)] + ([str(file.old_path)] if file.old_path else [])
+    patch = git.run_git(
+        changes.root,
+        "--literal-pathspecs",
+        "diff",
+        "--relative",
+        "-U3",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "-M",
+        *changes.range_args,
+        "--",
+        *paths,
+    )
+    return hunk_lines(patch)
+
+
+def hunk_lines(patch: str) -> list[str]:
+    """The hunk lines of a one-file diff: "@@ ..." headers and "+", "-", " " lines."""
+    lines = patch.split("\n")
+    start = next(
+        (i for i, line in enumerate(lines) if line.startswith("@@")), len(lines)
+    )
+    return [
+        line
+        for line in lines[start:]
+        if line and not line.startswith("\\")  # "\ No newline at end of file"
+    ]
