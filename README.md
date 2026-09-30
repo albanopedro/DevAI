@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 3.5: local AI with Ollama).
+> **Status:** early development (Phase 3.6: free AI only).
 
 ## Goal
 
@@ -14,6 +14,7 @@ It is a learning and portfolio project, and it grows in small, tested phases.
 
 ## Principles
 
+- **100% free, always.** DevAI uses no paid service, no paid API and no account of any kind. Its AI features use only free models: OpenCode's free models through your own OpenCode, or local models through Ollama. A model that could cost money is refused before anything runs.
 - **Deterministic first, AI second.** `devai analyze` works offline with no API key. AI is opt-in and only receives a structured, reviewable context.
 - **Privacy by default.** Honors `.gitignore`, never reads `.env` files, never prints secrets, and never sends code to an external API without explicit consent.
 - **User in control.** DevAI never applies code changes without showing a diff and asking for approval, and never commits or pushes.
@@ -26,8 +27,7 @@ Requires Python 3.11+.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"        # DevAI + test tools (only dependency: pathspec)
-pip install -e ".[dev,ai]"     # also AI analysis with Claude (Anthropic SDK)
-pip install -e ".[dev,ollama]" # or only local AI with Ollama (adds Pydantic)
+pip install -e ".[dev,ai]"     # also the free AI analysis (adds Pydantic)
 ```
 
 ## Usage
@@ -40,7 +40,7 @@ devai analyze path/to/project
 devai analyze --format json       # machine-readable output
 devai analyze --fail-on high      # exit code 1 if there is a HIGH finding (for CI)
 devai analyze --ai --dry-run      # preview what an AI analysis would send (sends nothing)
-devai analyze --ai                # AI analysis by Claude, after asking for confirmation
+devai analyze --ai                # free AI analysis (OpenCode free model), after asking
 ```
 
 Example output:
@@ -150,39 +150,29 @@ devai analyze --fail-on high
 
 ### AI analysis
 
-`devai analyze --ai` adds an analysis by Claude (Anthropic): a summary, risks, prioritized recommendations, and the limits of what it could judge. It needs the optional extra and an API key:
+`devai analyze --ai` adds an AI analysis: a summary, risks, prioritized recommendations, and the limits of what it could judge. **It is always free.** There are two providers:
+
+| Provider | How | Needs | Data |
+|---|---|---|---|
+| `opencode` (default) | Runs your own [OpenCode](https://opencode.ai) CLI with a free model (`opencode/space-bunny-free`) | `opencode` installed | The summary goes to OpenCode's free service |
+| `ollama` | Calls a model on your computer through [Ollama](https://ollama.com) (`qwen3.5:9b`) | Ollama running, model pulled | Stays on your machine |
 
 ```bash
 pip install -e ".[ai]"
-export ANTHROPIC_API_KEY=...        # never put it in a file inside a project
-devai analyze --ai --dry-run        # 1. see exactly what would be sent
-devai analyze --ai                  # 2. send it, after confirming
+devai analyze --ai --dry-run            # 1. see exactly what would be sent
+devai analyze --ai                      # 2. OpenCode, after you confirm
+devai analyze --ai --provider ollama    # or a local model, no question needed
 ```
 
 How it works:
 
-- **You confirm every time.** DevAI prints the local report, then asks before sending anything (`[y/N]`, "no" by default). Outside a terminal (CI, pipes) it refuses unless you pass `--yes`.
-- **One request per run** to `claude-opus-5-5` with effort `medium`. Override with `DEVAI_AI_MODEL` and `DEVAI_AI_EFFORT` (`low`, `medium`, `high`, `xhigh`, `max`). If the model declines for policy reasons, the API retries on a fallback model, and the report shows which model answered.
-- **Validated answer.** The model must answer in a fixed structure (Pydantic schema), or the run reports an error instead of free text.
-- **Costs money.** Each run sends about 1–2 thousand tokens and receives a few thousand (including the model's reasoning). The report prints the real token counts.
-- **Never affects `--fail-on`.** Model answers vary between runs; exit codes stay deterministic.
-- **The deterministic report always comes first.** If the AI step fails, you still get it, and the exit code is `3`.
-- Data sent to Anthropic is subject to Anthropic's data usage and retention policies.
-
-#### Local AI with Ollama
-
-The same analysis can run on a model on your own computer through [Ollama](https://ollama.com): free, and nothing leaves the machine.
-
-```bash
-pip install -e ".[ollama]"                    # or [ai], which also includes it
-ollama pull qwen3.5:9b                        # default model, 6.6 GB
-devai analyze --ai --provider ollama          # or: export DEVAI_AI_PROVIDER=ollama
-```
-
-- **Same data, same format.** Ollama gets the same system prompt and context as Claude (see "What is sent"), plus the answer schema, and must answer in the same validated structure.
-- **Consent follows the data.** With Ollama on this computer (`localhost`, `127.0.0.1`, `::1`), DevAI doesn't ask, because nothing leaves the machine. If `OLLAMA_HOST` points to another computer, DevAI asks exactly as it does for Anthropic.
-- **Settings:** `DEVAI_AI_MODEL` picks the model (try `qwen3.5:4b`, 3.4 GB, for speed). `OLLAMA_HOST` follows Ollama's own rules (default `http://localhost:11434`). `DEVAI_AI_EFFORT` applies to Anthropic only.
-- Small local models are slower and less insightful than Claude. The answer format is guaranteed; the depth is not.
+- **Free by construction.** With OpenCode, DevAI accepts only OpenCode's own free models (names ending in `-free`, or `big-pickle`). A paid model, or another provider configured in your OpenCode, is refused before anything runs. If OpenCode ever reports a non-zero cost for a run, DevAI treats it as an error. Ollama models are local, so they are always free.
+- **No tools for the model.** OpenCode runs with an inline config that defines a `devai` agent with every permission denied, in an empty temporary directory. The model receives the summary and can't read files or run commands. Each run appears in your OpenCode history as "DevAI analysis".
+- **Consent when data leaves the machine.** OpenCode (and an Ollama on another computer) sends the summary over the network, so DevAI prints the local report and asks `[y/N]` first. Outside a terminal it refuses unless you pass `--yes`. Local Ollama runs without asking.
+- **Know the model's data policy.** Some free OpenCode models may use what you send to improve them. DevAI prints a note when the chosen model is one of them. The default, `space-bunny-free`, declares zero retention and no training.
+- **Validated answer.** The model must answer in a fixed JSON structure (Pydantic schema), or the run reports an error instead of free text.
+- **Never affects `--fail-on`.** Model answers vary between runs; exit codes stay deterministic. If the AI step fails, you still get the full local report, and the exit code is `3`.
+- **Settings:** `DEVAI_AI_PROVIDER` (`opencode` or `ollama`, or `--provider`), `DEVAI_AI_MODEL`, and `OLLAMA_HOST` (same rules as Ollama, default `http://localhost:11434`). DevAI never reads or sends an API key.
 
 #### What is sent
 
@@ -225,10 +215,10 @@ src/devai/
 │   ├── context.py    # what an AI may receive: allow-list, size caps
 │   ├── prompt.py     # fixed system prompt, delimited user message
 │   ├── schema.py     # AIReport: the structure the model must answer with
-│   ├── anthropic_client.py  # Claude via the Anthropic SDK
+│   ├── opencode_client.py   # free models via your `opencode run` (subprocess)
 │   ├── ollama_client.py     # local models via Ollama's HTTP API (urllib)
 │   ├── result.py     # AIResult, AIError, LLMClient interface (no dependencies)
-│   └── settings.py   # DEVAI_AI_MODEL / DEVAI_AI_EFFORT
+│   └── settings.py   # provider, model, OLLAMA_HOST; rejects paid models
 ├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
 ├── git.py            # small subprocess wrapper around the git CLI
 └── analyzer/
@@ -258,8 +248,9 @@ tests/
 | 2b | Stack Detection | Dependencies, frameworks, tests, configuration files |
 | 2c | Findings | `Finding` model, first checks (missing tests, exposed `.env`, secrets), `--format json`, exit codes |
 | 3a | AI Context Builder | Allow-listed, size-capped context; `--ai --dry-run` preview, no network |
-| 3b | AI Analysis | `--ai`: consent, Claude call, validated structured report, LLM client interface |
+| 3b | AI Analysis | `--ai`: consent, validated structured report, LLM client interface (first provider: Anthropic, removed in 3.6) |
 | 3.5 | Local AI | `--provider ollama`: same context and report, local model, consent only when data leaves the machine |
+| 3.6 | Free AI only | OpenCode free models via the `opencode` CLI (default); Anthropic removed; paid models refused |
 | 4 | Code Review | `devai review`: analyze `git diff` |
 | 5 | Contextual Chat | `devai chat` |
 | 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |

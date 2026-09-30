@@ -1,6 +1,6 @@
 """Run the AI analysis on a model served by Ollama, usually on this computer.
 
-Same system prompt, same context (D025) and same AIReport as the Anthropic
+Same system prompt, same context (D025) and same AIReport as the OpenCode
 client; only the transport differs. The API is one JSON POST, so this uses
 urllib from the standard library instead of another dependency (D030).
 """
@@ -15,7 +15,7 @@ import pydantic
 from devai.ai.context import serialize_context
 from devai.ai.prompt import SYSTEM_PROMPT, build_user_message, schema_instructions
 from devai.ai.result import AIError, AIResult, AIUsage
-from devai.ai.schema import AIReport
+from devai.ai.schema import AIReport, report_schema
 from devai.ai.settings import AISettings
 
 TIMEOUT_SECONDS = 300.0  # local models can be slow, especially on first load
@@ -107,27 +107,6 @@ class OllamaClient:
             model=data.get("model") or self.settings.model,
             usage=AIUsage(data.get("prompt_eval_count", 0), data.get("eval_count", 0)),
         )
-
-
-def report_schema() -> dict[str, Any]:
-    """AIReport's JSON Schema with every $ref replaced by its definition.
-
-    Support for $defs/$ref in Ollama's `format` is undocumented, so the schema
-    is sent flat. (AIReport isn't recursive, so inlining always terminates.)
-    """
-    schema = AIReport.model_json_schema()
-    definitions = schema.get("$defs", {})
-
-    def inline(node: Any) -> Any:
-        if isinstance(node, dict):
-            if "$ref" in node:
-                return inline(definitions[node["$ref"].rsplit("/", 1)[-1]])
-            return {key: inline(value) for key, value in node.items() if key != "$defs"}
-        if isinstance(node, list):
-            return [inline(item) for item in node]
-        return node
-
-    return inline(schema)
 
 
 def error_detail(error: urllib.error.HTTPError) -> str:

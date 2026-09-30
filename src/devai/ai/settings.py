@@ -2,6 +2,10 @@
 
 DevAI never loads .env files (D026): it runs inside the project it analyzes,
 so reading ./.env would mean reading that project's secrets.
+
+DevAI must be free to use (D032). Both providers are free: OpenCode's free
+models (run through the user's own `opencode` CLI) and local models (Ollama).
+A model that could cost money is rejected here, before anything runs.
 """
 
 import ipaddress
@@ -10,13 +14,28 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-PROVIDERS = ("anthropic", "ollama")
-DEFAULT_PROVIDER = "anthropic"
-DEFAULT_MODELS = {"anthropic": "claude-opus-5-5", "ollama": "qwen3.5:9b"}
+PROVIDERS = ("opencode", "ollama")
+DEFAULT_PROVIDER = "opencode"
+DEFAULT_MODELS = {
+    "opencode": "opencode/space-bunny-free",  # free, zero data retention
+    "ollama": "qwen3.5:9b",
+}
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
-DEFAULT_EFFORT = "medium"
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
+# OpenCode's free models end in "-free", plus a few named exceptions.
+OPENCODE_FREE_EXCEPTIONS = frozenset({"big-pickle"})
+
+# Data use of OpenCode's free models, from opencode.ai/docs/zen (prefix → note).
+OPENCODE_DATA_NOTES = {
+    "space-bunny": None,  # zero retention, no training
+    "longcat": None,
+    "big-pickle": "this free model may use your data to improve it",
+    "mimo-": "this free model may use your data to improve it",
+    "ling-": "this free model may use your data to improve it",
+    "muse-spark": "this free model may use your data to train future models",
+    "nemotron-": "trial model: don't send personal or confidential data",
+}
 
 
 class SettingsError(ValueError):
@@ -26,7 +45,6 @@ class SettingsError(ValueError):
 @dataclass(frozen=True)
 class AISettings:
     model: str = DEFAULT_MODEL
-    effort: str = DEFAULT_EFFORT  # Anthropic only
     provider: str = DEFAULT_PROVIDER
     ollama_host: str = DEFAULT_OLLAMA_HOST  # Ollama only
 
@@ -35,14 +53,25 @@ class AISettings:
         """True if the context would be sent to another computer (D031)."""
         if self.provider == "ollama":
             return not is_loopback(self.ollama_host)
-        return True
+        return True  # OpenCode sends it to its cloud service
 
     @property
     def destination(self) -> str:
         """Where the context goes, as shown in the consent question."""
         if self.provider == "ollama":
             return f"Ollama at {self.ollama_host} ({self.model})"
-        return f"Anthropic ({self.model})"
+        return f"OpenCode ({self.model}, free model)"
+
+    @property
+    def data_note(self) -> str | None:
+        """What the provider may do with the data, when worth a warning."""
+        if self.provider != "opencode":
+            return None
+        name = self.model.removeprefix("opencode/")
+        for prefix, note in OPENCODE_DATA_NOTES.items():
+            if name.startswith(prefix):
+                return note
+        return "check this free model's data policy at opencode.ai/docs/zen"
 
 
 def load_settings(
@@ -58,17 +87,35 @@ def load_settings(
         )
 
     model = environ.get("DEVAI_AI_MODEL", "").strip() or DEFAULT_MODELS[chosen]
-    effort = environ.get("DEVAI_AI_EFFORT", "").strip().lower() or DEFAULT_EFFORT
-    if effort not in EFFORT_LEVELS:
-        levels = ", ".join(EFFORT_LEVELS)
-        raise SettingsError(f"DEVAI_AI_EFFORT must be one of {levels} (got {effort!r})")
+    if chosen == "opencode":
+        model = free_opencode_model(model)
 
     return AISettings(
         model=model,
-        effort=effort,
         provider=chosen,
         ollama_host=ollama_base_url(environ.get("OLLAMA_HOST", "")),
     )
+
+
+def free_opencode_model(model: str) -> str:
+    """Return "opencode/<name>" for a free OpenCode model; reject anything else.
+
+    Only OpenCode's own free models are allowed: another provider configured
+    in the user's OpenCode (or a paid model) could cost money.
+    """
+    provider, separator, name = model.partition("/")
+    if not separator:
+        provider, name = "opencode", model  # "space-bunny-free" → opencode/...
+    if provider != "opencode" or not is_free_opencode_name(name):
+        raise SettingsError(
+            f"DevAI only uses OpenCode's free models, so it can never cost anything "
+            f"(got {model!r}). Pick a model ending in '-free' or big-pickle."
+        )
+    return f"opencode/{name}"
+
+
+def is_free_opencode_name(name: str) -> bool:
+    return name.endswith("-free") or name in OPENCODE_FREE_EXCEPTIONS
 
 
 def ollama_base_url(value: str) -> str:

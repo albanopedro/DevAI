@@ -1,6 +1,6 @@
 """The structure the model must answer with (validated by Pydantic, D006)."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,3 +29,25 @@ class AIReport(BaseModel):
     limitations: list[str] = Field(
         description="What could not be assessed from the summary"
     )
+
+
+def report_schema() -> dict[str, Any]:
+    """AIReport's JSON Schema with every $ref replaced by its definition.
+
+    Not every model runtime handles $defs/$ref (Ollama's support is
+    undocumented), so the schema is sent flat. AIReport isn't recursive, so
+    inlining always terminates.
+    """
+    schema = AIReport.model_json_schema()
+    definitions = schema.get("$defs", {})
+
+    def inline(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return inline(definitions[node["$ref"].rsplit("/", 1)[-1]])
+            return {key: inline(value) for key, value in node.items() if key != "$defs"}
+        if isinstance(node, list):
+            return [inline(item) for item in node]
+        return node
+
+    return inline(schema)

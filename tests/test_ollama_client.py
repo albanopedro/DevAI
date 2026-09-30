@@ -9,9 +9,10 @@ from conftest import fake_ai_report
 
 from devai.ai import ollama_client
 from devai.ai.context import serialize_context
-from devai.ai.ollama_client import OllamaClient, report_schema
+from devai.ai.ollama_client import OllamaClient
 from devai.ai.prompt import SYSTEM_PROMPT, build_user_message
 from devai.ai.result import AIError, AIUsage
+from devai.ai.schema import report_schema
 from devai.ai.settings import AISettings
 
 CONTEXT = {"context_version": 1, "project": {"name": "demo"}, "findings": []}

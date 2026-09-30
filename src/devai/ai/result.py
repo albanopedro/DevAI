@@ -26,11 +26,11 @@ class AIUsage:
 @dataclass(frozen=True)
 class AIResult:
     report: AIReport
-    model: str  # the model that actually answered: may be a fallback model
+    model: str
     usage: AIUsage
 
 
 class LLMClient(Protocol):
-    """Anything that can turn an AI context into an AIResult (Anthropic, Ollama...)."""
+    """Anything that can turn an AI context into an AIResult (OpenCode, Ollama...)."""
 
     def analyze(self, context: dict[str, Any]) -> AIResult: ...

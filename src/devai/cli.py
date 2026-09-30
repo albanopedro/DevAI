@@ -57,8 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--ai",
         action="store_true",
-        help="add an AI analysis by Claude: sends a project summary, never code, "
-        "and asks first (see README)",
+        help="add a free AI analysis (OpenCode free models or local Ollama): "
+        "uses a project summary, never code, and asks before sending (see README)",
     )
     analyze.add_argument(
         "--dry-run",
@@ -74,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--provider",
         choices=PROVIDERS,
-        help="with --ai: anthropic (default) or ollama for a local model; "
-        "overrides DEVAI_AI_PROVIDER",
+        help="with --ai: opencode (default, free models via your OpenCode CLI) or "
+        "ollama (local model); overrides DEVAI_AI_PROVIDER",
     )
 
     return parser
@@ -154,20 +154,18 @@ def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISet
 
 
 def create_ai_client(settings: AISettings) -> LLMClient:
-    # Imported here: AI support is an optional extra.
+    # Imported here: AI support is an optional extra (it needs Pydantic).
     try:
         if settings.provider == "ollama":
             from devai.ai.ollama_client import OllamaClient
 
             return OllamaClient(settings)
-        from devai.ai.anthropic_client import AnthropicClient
+        from devai.ai.opencode_client import OpenCodeClient
 
-        return AnthropicClient(settings)
+        return OpenCodeClient(settings)
     except ImportError as error:
-        extra = "ollama" if settings.provider == "ollama" else "ai"
-        install = f"pip install 'devai[{extra}]'"
         raise SetupError(
-            f"AI support is not installed. Install it with: {install}"
+            "AI support is not installed. Install it with: pip install 'devai[ai]'"
         ) from error
 
 
@@ -180,7 +178,7 @@ def run_ai(
     """
     tokens = estimate_tokens(serialize_context(context))
     if settings.leaves_machine:
-        if not assume_yes and not confirm_sending(settings.destination, tokens):
+        if not assume_yes and not confirm_sending(settings, tokens):
             print("devai: AI analysis skipped. Nothing was sent.", file=sys.stderr)
             return None, False
         progress = f"Analyzing with {settings.model}…"
@@ -201,11 +199,13 @@ def is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def confirm_sending(destination: str, tokens: int) -> bool:
+def confirm_sending(settings: AISettings, tokens: int) -> bool:
     """Ask on stderr, so stdout stays clean for the report or JSON."""
+    if settings.data_note:
+        print(f"Note: {settings.data_note}.", file=sys.stderr)
     print(
         f"Send a project summary (~{tokens:,} tokens, no source code) to "
-        f"{destination}? Preview it with --dry-run. [y/N] ",
+        f"{settings.destination}? Preview it with --dry-run. [y/N] ",
         end="",
         file=sys.stderr,
         flush=True,

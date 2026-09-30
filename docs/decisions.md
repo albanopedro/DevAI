@@ -158,11 +158,15 @@ New decisions are appended; superseded ones are marked, not deleted.
 
 ## D026: Phase 3 split into 3a (context) and 3b (model call); Anthropic as first provider
 
+> **Partly superseded by D032:** the Anthropic provider was removed in Phase 3.6. The 3a/3b split and the no-`.env` rule still apply.
+
 - **Decision:** 3a builds and previews the context with no dependency and no network access. 3b adds the call. The first provider is Anthropic (Claude), through the official `anthropic` SDK as an optional extra, behind a small `LLMClient` interface so Ollama (3.5) can plug in.
 - **Why:** The user can review and approve exactly what leaves the machine before any code that sends it exists. An optional extra keeps the core install dependency-light for users who never enable AI.
 - **Related:** DevAI never auto-loads `.env` files, because it runs inside the analyzed project and would read that project's secrets. The API key comes only from the environment. `.env.example` documents the variables.
 
 ## D027: AI client: one structured request, behind a small interface
+
+> **Superseded by D032/D033:** the Anthropic client described here was removed in Phase 3.6. The `LLMClient` interface, the validated `AIReport` and the one-request design remain.
 
 - **Decision:** `ai/client.py` (renamed `ai/anthropic_client.py` in Phase 3.5) sends one request per run through `client.beta.messages.parse`: the fixed system prompt, the context from D025 wrapped in `<project_context>` tags, and `AIReport` (Pydantic) as the required output format. Defaults are `claude-opus-5-5` at effort `medium`, configurable by environment variable. Server-side refusal fallback (`fallbacks: "default"`) is enabled, and the report shows the model that actually answered. The CLI depends only on the `LLMClient` protocol, so Ollama (3.5) can be a second implementation. The SDK is an optional `[ai]` extra, imported only when `--ai` is used.
 - **Why:** Structured output turns "the model said something" into a validated object; an answer in the wrong shape is an error, not text to guess at. A protocol keeps the CLI independent of the provider. Every SDK failure becomes a short `AIError` message. One case needs care: with no credentials, the SDK raises a plain `TypeError` before any network access, so it is matched narrowly, and any other `TypeError` still surfaces as a bug.
@@ -190,3 +194,16 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Decision:** `AISettings.leaves_machine` decides whether to ask. Anthropic always leaves the machine. Ollama leaves it unless `OLLAMA_HOST` is `localhost`, a loopback address or `0.0.0.0`; any other name counts as remote, since it may resolve to another computer. Local Ollama runs without a question, even with no terminal, and says it is running locally.
 - **Why:** The consent rule protects data, not a vendor. Asking before a purely local run would be a meaningless click; skipping the question for a remote Ollama server would send data without consent.
 - **Alternatives:** Always ask (simple, but trains users to click through); never ask for Ollama (wrong when Ollama runs on another machine).
+
+## D032: DevAI is 100% free; the Anthropic provider is removed
+
+- **Decision:** DevAI must never cost anything and must not depend on any paid account. This is the project's primordial rule, and every future dependency, service or provider must pass it first. The Anthropic provider, its SDK and every Anthropic setting (`ANTHROPIC_API_KEY`, `DEVAI_AI_EFFORT`) were removed. The AI providers are now `opencode` (default, D033) and `ollama` (local, D030). The `[ai]` extra installs only Pydantic.
+- **Why:** The user's requirement. A paid API, even behind a confirmation prompt, could create costs. Removing it makes "free" a property of the code, not a setting to remember.
+- **Kept:** The `LLMClient` interface, so another free provider can be added without touching the CLI. Secret scanning still detects leaked `sk-ant-…` keys in analyzed projects: that is a regex, not a service.
+
+## D033: OpenCode free models, through the user's own OpenCode CLI
+
+- **Decision:** The `opencode` provider runs `opencode run --model opencode/<free model> --agent devai --format json --dir <empty temp dir>`. An inline config (`OPENCODE_CONFIG_CONTENT`) defines the `devai` agent with DevAI's system prompt and `"permission": {"*": "deny"}`. The answer is the last `text` event, validated as an `AIReport`. Token counts come from `step_finish` events. The default model is `opencode/space-bunny-free`, which declares zero retention and no training. Settings accept only `opencode/` models ending in `-free` (or `big-pickle`), and a run that reports a non-zero `cost` is an error.
+- **Why:** OpenCode is free software, and its free models can be used without an account from within OpenCode. Its code sends a `public` key and keeps only zero-cost models, and the server bills such requests to nobody. Calling the service's HTTP API directly was tested and rejected. One free model answered, but another refused with *"OpenCode's free tier can only be used from within OpenCode"*: that is the service's stated rule, so DevAI goes through OpenCode instead of imitating it. Denied permissions and an empty directory keep the model limited to the AI context (D025), even though OpenCode is an agent with tools.
+- **Trade-offs:** Requires the `opencode` CLI. Each run appears in the user's OpenCode history ("DevAI analysis"). The message travels as a command-line argument, visible to other local users in the process list while the run lasts, which is acceptable because it contains only the summary. Free models can change or disappear, so the model is configurable and errors suggest another free model or `--provider ollama`.
+- **Alternatives:** Direct HTTP to OpenCode Zen with the `public` key (against the free tier's stated rule); OpenCode Zen with an account (paid models reachable, breaks D032); Ollama only (fully private, but needs a local install and a multi-GB model).

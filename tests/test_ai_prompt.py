@@ -5,10 +5,10 @@ import pytest
 from devai.ai.context import serialize_context
 from devai.ai.prompt import SYSTEM_PROMPT, build_user_message
 from devai.ai.settings import (
-    DEFAULT_EFFORT,
     DEFAULT_MODEL,
     AISettings,
     SettingsError,
+    free_opencode_model,
     load_settings,
     ollama_base_url,
 )
@@ -48,37 +48,20 @@ def test_system_prompt_sets_the_ground_rules():
 
 
 def test_default_settings():
-    assert load_settings({}) == AISettings(DEFAULT_MODEL, DEFAULT_EFFORT)
-    assert DEFAULT_MODEL == "claude-opus-5-5"
-    assert DEFAULT_EFFORT == "medium"
+    settings = load_settings({})
 
-
-def test_settings_from_environment():
-    environ = {"DEVAI_AI_MODEL": " claude-sonnet-5-5 ", "DEVAI_AI_EFFORT": "HIGH"}
-
-    assert load_settings(environ) == AISettings("claude-sonnet-5-5", "high")
+    assert settings == AISettings()
+    assert settings.provider == "opencode"
+    assert settings.model == DEFAULT_MODEL == "opencode/space-bunny-free"
+    assert settings.leaves_machine is True
+    assert settings.destination == "OpenCode (opencode/space-bunny-free, free model)"
+    assert settings.data_note is None  # zero-retention model: nothing to warn about
 
 
 def test_empty_values_fall_back_to_defaults():
-    environ = {"DEVAI_AI_MODEL": "", "DEVAI_AI_EFFORT": "  "}
+    environ = {"DEVAI_AI_MODEL": "", "DEVAI_AI_PROVIDER": "  "}
 
     assert load_settings(environ) == AISettings()
-
-
-def test_invalid_effort_is_rejected():
-    with pytest.raises(SettingsError, match="DEVAI_AI_EFFORT must be one of"):
-        load_settings({"DEVAI_AI_EFFORT": "extreme"})
-
-
-# --- providers ---------------------------------------------------------------
-
-
-def test_default_provider_is_anthropic():
-    settings = load_settings({})
-
-    assert settings.provider == "anthropic"
-    assert settings.leaves_machine is True
-    assert settings.destination == "Anthropic (claude-opus-5-5)"
 
 
 def test_ollama_has_its_own_default_model():
@@ -87,17 +70,74 @@ def test_ollama_has_its_own_default_model():
     assert settings.provider == "ollama"
     assert settings.model == "qwen3.5:9b"
     assert settings.ollama_host == "http://localhost:11434"
+    assert settings.data_note is None
 
 
 def test_provider_argument_wins_over_environment():
-    environ = {"DEVAI_AI_PROVIDER": "anthropic"}
+    environ = {"DEVAI_AI_PROVIDER": "opencode"}
 
     assert load_settings(environ, provider="ollama").provider == "ollama"
 
 
-def test_invalid_provider_is_rejected():
+@pytest.mark.parametrize("provider", ["gpt", "anthropic"])
+def test_unknown_provider_is_rejected(provider):
     with pytest.raises(SettingsError, match="DEVAI_AI_PROVIDER must be one of"):
-        load_settings({"DEVAI_AI_PROVIDER": "gpt"})
+        load_settings({"DEVAI_AI_PROVIDER": provider})
+
+
+# --- the primordial rule: OpenCode models must be free ------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "normalized"),
+    [
+        ("space-bunny-free", "opencode/space-bunny-free"),
+        ("opencode/space-bunny-free", "opencode/space-bunny-free"),
+        (" big-pickle ", "opencode/big-pickle"),
+        ("opencode/deepseek-v4-flash-free", "opencode/deepseek-v4-flash-free"),
+    ],
+)
+def test_free_opencode_models_are_accepted(model, normalized):
+    assert load_settings({"DEVAI_AI_MODEL": model}).model == normalized
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "opencode/claude-opus-5-5",  # paid model on OpenCode
+        "opencode/gpt-5.5",
+        "anthropic/claude-sonnet-5-5",  # another provider set up in OpenCode
+        "openai/gpt-5-free",  # "-free" but not OpenCode's own model
+        "free",
+    ],
+)
+def test_models_that_could_cost_money_are_rejected(model):
+    with pytest.raises(SettingsError, match="only uses OpenCode's free models"):
+        free_opencode_model(model)
+
+
+def test_ollama_models_are_not_restricted():
+    settings = load_settings(
+        {"DEVAI_AI_PROVIDER": "ollama", "DEVAI_AI_MODEL": "llama3.2"}
+    )
+
+    assert settings.model == "llama3.2"  # local models are always free
+
+
+@pytest.mark.parametrize(
+    ("model", "note"),
+    [
+        ("big-pickle", "may use your data to improve it"),
+        ("mimo-v2.6-flash-free", "may use your data to improve it"),
+        ("nemotron-3-ultra-free", "don't send personal or confidential data"),
+        ("longcat-2.5-preview-free", None),
+        ("some-new-model-free", "check this free model's data policy"),
+    ],
+)
+def test_data_notes_for_free_models(model, note):
+    data_note = load_settings({"DEVAI_AI_MODEL": model}).data_note
+
+    assert data_note == note if note is None else note in data_note
 
 
 @pytest.mark.parametrize(

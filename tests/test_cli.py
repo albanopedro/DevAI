@@ -279,12 +279,12 @@ class FakeLLMClient:
 
 @pytest.fixture
 def fake_ai(monkeypatch):
-    """Replace the Anthropic client; simulate a non-interactive terminal."""
+    """Replace the AI client (never a real model); simulate no terminal."""
     pytest.importorskip("pydantic")  # AIReport needs the optional [ai] extra
     client = FakeLLMClient()
     monkeypatch.setattr(cli, "create_ai_client", lambda settings: client)
     monkeypatch.setattr(cli, "is_interactive", lambda: False)
-    for variable in ["DEVAI_AI_MODEL", "DEVAI_AI_EFFORT", "DEVAI_AI_PROVIDER"]:
+    for variable in ["DEVAI_AI_MODEL", "DEVAI_AI_PROVIDER"]:
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     return client
@@ -307,7 +307,7 @@ def test_ai_with_yes_adds_the_ai_section(tmp_path, capsys, fake_ai):
     assert "  ⚠ HIGH    Secrets committed" in captured.out
     assert "  1. Ignore .env files [small effort]" in captured.out
     assert "Tokens: 10 in / 20 out" in captured.out
-    assert "Analyzing with claude-opus-5-5…" in captured.err
+    assert "Analyzing with opencode/space-bunny-free…" in captured.err
     assert len(fake_ai.contexts) == 1
 
 
@@ -328,7 +328,10 @@ def test_consent_yes_sends(tmp_path, capsys, fake_ai, monkeypatch, typed):
     assert main(["analyze", str(tmp_path), "--ai"]) == EXIT_OK
 
     assert len(fake_ai.contexts) == 1
-    assert "no source code) to Anthropic (claude-opus-5-5)?" in capsys.readouterr().err
+    assert (
+        "no source code) to OpenCode (opencode/space-bunny-free, free model)?"
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize("typed", ["n\n", "\n", "", "whatever\n"])
@@ -363,13 +366,13 @@ def test_yes_requires_ai(tmp_path, capsys):
 
 
 def test_ai_failure_still_prints_the_report(tmp_path, capsys, fake_ai):
-    fake_ai.error = AIError("Could not reach the Anthropic API.")
+    fake_ai.error = AIError("OpenCode is not installed.")
 
     assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_AI_ERROR
 
     captured = capsys.readouterr()
     assert "Findings:" in captured.out
-    assert "AI analysis failed: Could not reach the Anthropic API." in captured.err
+    assert "AI analysis failed: OpenCode is not installed." in captured.err
 
 
 def test_ai_json_output(tmp_path, capsys, fake_ai):
@@ -391,20 +394,48 @@ def test_fail_on_ignores_the_ai_opinion(tmp_path, capsys, fake_ai):
     assert main(["analyze", str(tmp_path), "--ai", "--yes", "--fail-on", "high"]) == 0
 
 
-def test_missing_ai_extra_explains_how_to_install(tmp_path, capsys, monkeypatch):
-    monkeypatch.setitem(sys.modules, "anthropic", None)  # makes `import anthropic` fail
-    monkeypatch.delitem(sys.modules, "devai.ai.anthropic_client", raising=False)
+@pytest.mark.parametrize("provider", ["opencode", "ollama"])
+def test_missing_ai_extra_explains_how_to_install(
+    tmp_path, capsys, monkeypatch, provider
+):
+    monkeypatch.setitem(sys.modules, "pydantic", None)  # makes `import pydantic` fail
+    for module in [
+        "devai.ai.opencode_client",
+        "devai.ai.ollama_client",
+        "devai.ai.schema",
+    ]:
+        monkeypatch.delitem(sys.modules, module, raising=False)
 
-    assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_USAGE
+    args = ["analyze", str(tmp_path), "--ai", "--yes", "--provider", provider]
+    assert main(args) == EXIT_USAGE
     assert "pip install 'devai[ai]'" in capsys.readouterr().err
 
 
-def test_invalid_ai_setting_is_a_usage_error(tmp_path, capsys, fake_ai, monkeypatch):
-    monkeypatch.setenv("DEVAI_AI_EFFORT", "extreme")
+def test_paid_model_is_refused_before_anything_runs(
+    tmp_path, capsys, fake_ai, monkeypatch
+):
+    # The primordial rule: DevAI must never cost anything.
+    monkeypatch.setenv("DEVAI_AI_MODEL", "opencode/claude-opus-5-5")
 
     assert main(["analyze", str(tmp_path), "--ai", "--yes"]) == EXIT_USAGE
-    assert "DEVAI_AI_EFFORT must be one of" in capsys.readouterr().err
+
+    captured = capsys.readouterr()
+    assert "only uses OpenCode's free models" in captured.err
+    assert captured.out == ""
     assert fake_ai.contexts == []
+
+
+def test_consent_warns_when_a_free_model_may_use_the_data(
+    tmp_path, capsys, fake_ai, monkeypatch
+):
+    monkeypatch.setenv("DEVAI_AI_MODEL", "big-pickle")
+    answer(monkeypatch, "n\n")
+
+    main(["analyze", str(tmp_path), "--ai"])
+
+    assert "Note: this free model may use your data to improve it." in (
+        capsys.readouterr().err
+    )
 
 
 def test_ai_text_is_stripped_of_control_characters(tmp_path, capsys, fake_ai):
@@ -451,7 +482,7 @@ def test_remote_ollama_needs_consent(tmp_path, capsys, fake_ai, monkeypatch):
     assert "Ollama at http://gpu-box:11434" in capsys.readouterr().err
 
 
-def test_remote_ollama_asks_like_anthropic(tmp_path, capsys, fake_ai, monkeypatch):
+def test_remote_ollama_asks_like_opencode(tmp_path, capsys, fake_ai, monkeypatch):
     monkeypatch.setenv("OLLAMA_HOST", "gpu-box")
     answer(monkeypatch, "n\n")
 
@@ -469,17 +500,10 @@ def test_provider_requires_ai(tmp_path, capsys):
 
 
 def test_create_ai_client_picks_the_provider():
-    pytest.importorskip("pydantic")  # the [ollama] or [ai] extra
+    pytest.importorskip("pydantic")  # the [ai] extra
     from devai.ai.ollama_client import OllamaClient
+    from devai.ai.opencode_client import OpenCodeClient
     from devai.ai.settings import AISettings
 
     assert isinstance(cli.create_ai_client(AISettings(provider="ollama")), OllamaClient)
-
-
-def test_missing_ollama_extra_explains_how_to_install(tmp_path, capsys, monkeypatch):
-    monkeypatch.setitem(sys.modules, "pydantic", None)
-    for module in ["devai.ai.ollama_client", "devai.ai.schema"]:
-        monkeypatch.delitem(sys.modules, module, raising=False)
-
-    assert main(["analyze", str(tmp_path), "--ai", "--provider", "ollama"]) == 2
-    assert "pip install 'devai[ollama]'" in capsys.readouterr().err
+    assert isinstance(cli.create_ai_client(AISettings()), OpenCodeClient)
