@@ -20,7 +20,7 @@ from devai.ai.settings import AISettings
 TIMEOUT_SECONDS = 300.0  # local models can be slow, especially on first load
 # Ollama's default context window is small and truncates silently; the
 # prompt, context and answer need room.
-CONTEXT_WINDOW = 8192
+CONTEXT_WINDOW = 16_384  # chat contexts reach ~9k tokens (D041)
 
 # No proxy handler: the context must go straight to the Ollama server, never
 # through an HTTP proxy configured in the environment.

@@ -6,6 +6,7 @@ from devai.ai.context import serialize_context
 from devai.chat.context import (
     CHAT_CONTEXT_VERSION,
     MAX_CHAT_FILES,
+    MAX_HISTORY_CHARACTERS,
     MAX_LINES_PER_FILE,
     MAX_QUESTION_CHARACTERS,
     build_chat_context,
@@ -33,8 +34,8 @@ def selection(*files):
     )
 
 
-def context(question="why 500?", files=()):
-    return build_chat_context(question, INFO, CheckReport(), selection(*files))
+def context(question="why 500?", files=(), history=()):
+    return build_chat_context(question, INFO, CheckReport(), selection(*files), history)
 
 
 def test_fields_are_an_explicit_allow_list():
@@ -46,11 +47,12 @@ def test_fields_are_an_explicit_allow_list():
         "question",
         "project",
         "files",
+        "history",  # added in 5b (D041): earlier questions and answers
         "redacted_lines",
         "truncated",
     }
     assert set(built["files"][0]) == {"path", "reason", "lines"}
-    assert built["chat_context_version"] == CHAT_CONTEXT_VERSION == 1
+    assert built["chat_context_version"] == CHAT_CONTEXT_VERSION == 2
 
 
 def test_project_summary_is_the_allow_listed_one():
@@ -118,3 +120,38 @@ def test_long_question_is_cut_and_flagged():
 
     assert len(built["question"]) == MAX_QUESTION_CHARACTERS
     assert built["truncated"]["question"]["total"] == MAX_QUESTION_CHARACTERS + 10
+
+
+# --- history (5b) -------------------------------------------------------------------
+
+
+def test_history_carries_earlier_questions_and_answers():
+    history = [{"question": "what is main?", "answer": "The entry point."}]
+
+    built = context(history=history)
+
+    assert built["history"] == history
+
+
+def test_history_keeps_the_most_recent_exchanges_that_fit():
+    big = "x" * (MAX_HISTORY_CHARACTERS // 2)
+    history = [
+        {"question": "old", "answer": big},
+        {"question": "middle", "answer": big},
+        {"question": "new", "answer": "short"},
+    ]
+
+    built = context(history=history)
+
+    assert [h["question"] for h in built["history"]] == ["middle", "new"]
+    assert built["truncated"]["history"] == {"shown": 2, "total": 3}
+
+
+def test_history_is_redacted_again():
+    secret, _ = FAKE_SECRETS["secret/stripe-key"]
+    history = [{"question": "q", "answer": f"use key {secret}"}]
+
+    built = context(history=history)
+
+    assert secret not in serialize_context(built)
+    assert built["redacted_lines"] == 1

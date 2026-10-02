@@ -45,3 +45,34 @@ def review_to_json(
             "discarded_issues": discarded,
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def chat_to_json(
+    name: str,
+    context: dict,
+    ai: AIResult | None,
+    dropped_sources: int = 0,
+    dropped_suggestions: int = 0,
+) -> str:
+    """A chat question as JSON: the files sent (names, reasons) and the answer."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "chat": {
+            "project": name,
+            "question": context["question"],
+            "files": [
+                {"path": file["path"], "reason": file["reason"]}
+                for file in context["files"]
+            ],
+        },
+    }
+    if ai is not None:
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "answer": ai.report.model_dump(mode="json"),
+            "dropped_sources": dropped_sources,
+            "dropped_suggestions": dropped_suggestions,
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)

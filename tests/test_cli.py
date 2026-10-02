@@ -8,6 +8,7 @@ import pytest
 from conftest import (
     FAKE_SECRETS,
     fake_ai_report,
+    fake_chat_answer,
     fake_review_report,
     git_commit,
     git_run,
@@ -843,7 +844,7 @@ def test_chat_dry_run_json(chat_project, capsys):
     main(["chat", str(chat_project), "--ask", "users", "--dry-run", "--format", "json"])
 
     document = json.loads(capsys.readouterr().out)
-    assert document["chat_context_version"] == 1
+    assert document["chat_context_version"] == 2
     assert document["files"][0]["path"] == "api/users.py"
 
 
@@ -860,12 +861,7 @@ def test_chat_file_outside_the_project_is_refused(chat_project, capsys):
     assert "outside the project" in capsys.readouterr().err
 
 
-def test_chat_without_dry_run_is_not_available_yet(chat_project, capsys):
-    assert main(["chat", str(chat_project), "--ask", "q"]) == EXIT_USAGE
-    assert "Phase 5b" in capsys.readouterr().err
-
-
-def test_chat_without_a_question(chat_project, capsys):
+def test_chat_without_a_question_needs_a_terminal(chat_project, capsys):
     assert main(["chat", str(chat_project), "--dry-run"]) == EXIT_USAGE
     assert "needs a question" in capsys.readouterr().err
 
@@ -879,3 +875,136 @@ def test_chat_dry_run_makes_no_network_calls(chat_project, capsys, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", no_network)
 
     assert main(["chat", str(chat_project), "--ask", "users", "--dry-run"]) == EXIT_OK
+
+
+# --- chat --ask with AI (Phase 5b, step 1): the model is always a fake --------------
+
+
+@pytest.fixture
+def fake_chat_ai(fake_ai):
+    fake_ai.result = AIResult(fake_chat_answer(), "fake-model", AIUsage(50, 60))
+    return fake_ai
+
+
+def test_chat_ask_answers_with_sources(chat_project, capsys, fake_chat_ai):
+    args = ["chat", str(chat_project), "--ask", "why do users get 500?", "--yes"]
+
+    assert main(args) == EXIT_OK
+
+    captured = capsys.readouterr()
+    out = captured.out
+    assert out.index("DEVAI CHAT") < out.index("ANSWER (fake-model)")
+    assert "  1. api/users.py  matches: users, get, 500  (2 lines)\n" in out
+    assert "get_user raises Error(500)" in out
+    assert "Sources:\n  api/users.py:2\n" in out
+    assert "Asking opencode/space-bunny-free…" in captured.err
+    assert fake_chat_ai.requests[0].title == "DevAI chat"
+
+
+def test_chat_ask_sends_the_same_context_as_the_dry_run(
+    chat_project, capsys, fake_chat_ai
+):
+    base = ["chat", str(chat_project), "--ask", "users 500"]
+    main([*base, "--dry-run", "--format", "json"])
+    previewed = json.loads(capsys.readouterr().out)
+
+    main([*base, "--yes"])
+
+    assert fake_chat_ai.contexts == [previewed]
+
+
+def test_chat_ask_consent_lists_the_files(
+    chat_project, capsys, fake_chat_ai, monkeypatch
+):
+    answer(monkeypatch, "\n")  # just Enter: no
+
+    assert main(["chat", str(chat_project), "--ask", "users 500"]) == EXIT_OK
+
+    err = capsys.readouterr().err
+    assert "Send the question + 2 files (~" in err
+    assert "Files: api/users.py, README.md." in err
+    assert "AI chat skipped. Nothing was sent." in err
+    assert fake_chat_ai.requests == []
+
+
+def test_chat_ask_without_terminal_needs_yes(chat_project, capsys, fake_chat_ai):
+    assert main(["chat", str(chat_project), "--ask", "users"]) == EXIT_USAGE
+    assert fake_chat_ai.requests == []
+
+
+def test_chat_ask_drops_invented_sources_and_bad_suggestions(
+    chat_project, capsys, fake_chat_ai
+):
+    write(chat_project, "api/db.py", "def connect():\n    pass\n")
+    write(chat_project, ".env", "DB=secret\n")
+    fake_chat_ai.result = AIResult(
+        fake_chat_answer(
+            sources=["api/users.py:2", "api/invented.py:9", "README.md:999"],
+            suggested_files=[
+                {"path": "api/db.py", "reason": "the database layer"},
+                {"path": ".env", "reason": "configuration"},
+                {"path": "../outside.py", "reason": "nope"},
+            ],
+        ),
+        "fake-model",
+        AIUsage(1, 1),
+    )
+
+    main(["chat", str(chat_project), "--ask", "users 500", "--yes"])
+
+    out = capsys.readouterr().out
+    assert "Sources:\n  api/users.py:2\n  README.md\n" in out  # bad line → no line
+    assert "  - api/db.py: the database layer" in out
+    assert ".env" not in out.split("ANSWER")[1]
+    assert "Dropped 1 source and 2 suggestions" in out
+
+
+def test_chat_ask_json(chat_project, capsys, fake_chat_ai):
+    main(["chat", str(chat_project), "--ask", "users 500", "--yes", "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["chat"]["files"][0] == {
+        "path": "api/users.py",
+        "reason": "matches: users, 500",
+    }
+    assert document["ai"]["answer"]["sources"] == ["api/users.py:2"]
+    assert document["ai"]["dropped_sources"] == 0
+
+
+def test_chat_ask_failure_exits_3(chat_project, capsys, fake_chat_ai):
+    fake_chat_ai.error = AIError("OpenCode is not installed.")
+
+    assert main(["chat", str(chat_project), "--ask", "users", "--yes"]) == EXIT_AI_ERROR
+    assert "AI chat failed: OpenCode is not installed." in capsys.readouterr().err
+
+
+def test_chat_ask_paid_model_is_refused(
+    chat_project, capsys, fake_chat_ai, monkeypatch
+):
+    monkeypatch.setenv("DEVAI_AI_MODEL", "opencode/gpt-5.5")
+
+    assert main(["chat", str(chat_project), "--ask", "users", "--yes"]) == EXIT_USAGE
+    assert fake_chat_ai.requests == []
+
+
+# --- interactive chat from the CLI (Phase 5b, step 2) ---------------------------------
+
+
+def test_interactive_chat_needs_a_terminal(chat_project, capsys, fake_chat_ai):
+    assert main(["chat", str(chat_project)]) == EXIT_USAGE
+    assert "needs a terminal" in capsys.readouterr().err
+
+
+def test_interactive_chat_runs_in_a_terminal(
+    chat_project, capsys, fake_chat_ai, monkeypatch
+):
+    typed = iter(["users 500", "y", "/quit"])
+    monkeypatch.setattr(cli, "is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "read_line", lambda prompt: next(typed, None))
+
+    assert main(["chat", str(chat_project), "--file", "README.md"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "DEVAI CHAT · " in out
+    assert "Added README.md: it goes with every next question." in out
+    assert len(fake_chat_ai.requests) == 1

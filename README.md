@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 5a: chat context).
+> **Status:** early development (Phase 5b: free AI chat).
 
 ## Goal
 
@@ -203,17 +203,26 @@ What would be sent:
 
 ### Asking about a project (chat)
 
-`devai chat` will answer questions about a project with the relevant files as context. It is being built in two steps. **Phase 5a** (current) picks the files and shows exactly what would be sent, with no AI and no network access:
+`devai chat` answers questions about a project, citing `path:line`, with free models (the same providers as `analyze --ai`). You approve the files before each question.
 
 ```bash
-devai chat --ask "why does /users return 500?" --dry-run
-devai chat --ask "how is the cart saved?" --file src/cart.js --dry-run   # add a file yourself
+devai chat                                              # a conversation in the terminal
+devai chat --ask "why does /users return 500?"          # one question, then exit
+devai chat --ask "how is the cart saved?" --file src/cart.js   # add a file yourself
+devai chat --ask "why does /users return 500?" --dry-run       # see what would be sent
 ```
+
+In a conversation, before each question DevAI lists the files and why they were picked, then asks `[y]es / [n]o / drop N / add PATH`. Commands: `/add PATH` sends a file with every next question, `/drop PATH`, `/files`, `/clear` (forget the conversation), `/help` and `/quit` (Ctrl+D also works).
+
+How it works:
 
 - **Files are picked locally, with a reason.** The question's terms (stopwords removed, in Portuguese and English) are matched against each file's path (worth more) and content (capped). The best 5 are shown with what they matched, e.g. `api/users.py  matches: users, get, 500`. No AI decides what to read.
 - **`--file` gets the same checks** as everything else: it must be inside the project, not a symlink, not ignored by `.gitignore`, and not an environment, lock, minified, binary or large file.
 - **What would be sent:** the question, the project summary (as in "What is sent" above), and the chosen files with **numbered lines**, so an answer can cite `path:line`. Every line that may hold a secret is replaced, in the files and in the question. Limits: 5 files, 300 lines each, about 30,000 characters of file content.
-- **Phase 5b** will turn this into a conversation: you approve the files before each question, and the AI can only *suggest* more files for you to approve.
+- **The AI never reads a file by itself.** It can *suggest* up to 3 files it would need. Suggestions are shown only for project files that would pass the `--file` checks, and you decide whether to send them (`--file` or `/add`).
+- **Answers are checked against what was sent.** Sources that point at files that weren't sent are dropped, and a line number outside a sent file keeps only the file. The answer says how many sources and suggestions were dropped.
+- **The conversation is remembered locally.** Each question also sends the earlier questions and answers (the most recent ones that fit about 6,000 characters), so a follow-up like "and the POST route?" makes sense. Files from earlier questions are **not** resent unless they are picked or added again. `/clear` forgets the conversation.
+- **Consent as everywhere else:** OpenCode's free models get the question only after your `y`, a local Ollama doesn't ask, and `--yes` skips the question. Outside a terminal, use `--ask` with `--yes`. If the AI step fails, `--ask` exits with code `3`; in a conversation you can simply ask again.
 
 ### AI analysis
 
@@ -304,7 +313,10 @@ src/devai/
     └── secrets.py         # secret patterns, file skipping, masking
 ├── chat/             # `devai chat`: file selection and the chat context
 │   ├── retrieval.py       # local keyword search, --file checks
-│   └── context.py         # what a chat answer may receive: numbered lines, redaction
+│   ├── context.py         # what a chat answer may receive: numbered lines, history
+│   ├── ai.py              # the chat task: prompt, consent question, grounding
+│   ├── schema.py          # ChatAnswer: answer, sources, suggested files
+│   └── session.py         # the conversation: approval, /commands, history
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size

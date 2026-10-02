@@ -310,3 +310,65 @@ def format_ai_review_section(result: AIResult, discarded: int = 0) -> str:
         "Written by AI from the changed lines only, not the whole project.",
     ]
     return "\n".join(lines)
+
+
+def format_chat_header(name: str, context: dict) -> str:
+    """The question and the files that would go with it (names and reasons only)."""
+    lines = [
+        "DEVAI CHAT",
+        SEPARATOR,
+        f"Project:  {printable(name)}",
+        f"Question: {printable(context['question'])}",
+    ]
+    return "\n".join(lines + format_chat_files(context))
+
+
+def format_chat_files(context: dict) -> list[str]:
+    files = context["files"]
+    if not files:
+        return ["Files:    none; only the project summary goes with the question"]
+    width = max(len(printable(file["path"])) for file in files)
+    return ["Files:"] + [
+        f"  {number}. {printable(file['path']):<{width}}  "
+        f"{printable(file['reason'])}  ({len(file['lines'])} "
+        f"{plural(len(file['lines']), 'line')})"
+        for number, file in enumerate(files, start=1)
+    ]
+
+
+def format_chat_answer(
+    result: AIResult, dropped_sources: int = 0, dropped_suggestions: int = 0
+) -> str:
+    """Render a chat answer. Every string in it is model output: untrusted."""
+    answer = result.report
+    lines = [f"ANSWER ({printable(result.model)})", SEPARATOR]
+    # Keep the answer's own line breaks (lists, code blocks); strip control chars.
+    lines += [printable(line) for line in answer.answer.strip().split("\n")]
+
+    if answer.sources:
+        lines += ["", "Sources:"]
+        lines += [f"  {printable(source)}" for source in answer.sources]
+    if answer.suggested_files:
+        lines += ["", "The AI would also like to see (add them with --file or /add):"]
+        for suggestion in answer.suggested_files:
+            lines += wrap(f"{suggestion.path}: {suggestion.reason}", "  - ", "    ")
+
+    dropped = []
+    if dropped_sources:
+        dropped.append(f"{dropped_sources} {plural(dropped_sources, 'source')}")
+    if dropped_suggestions:
+        dropped.append(
+            f"{dropped_suggestions} {plural(dropped_suggestions, 'suggestion')}"
+        )
+    lines.append("")
+    if dropped:
+        lines.append(
+            f"Dropped {' and '.join(dropped)} that didn't match the shown files "
+            "or the project."
+        )
+    usage = result.usage
+    lines += [
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI from the files listed above, not the whole project.",
+    ]
+    return "\n".join(lines)

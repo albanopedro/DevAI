@@ -59,13 +59,14 @@ def select_files(
     question: str,
     extra_files: tuple[str, ...] = (),
     limit: int = MAX_SELECTED_FILES,
+    extra_reason: str = "added with --file",
 ) -> Selection:
     """The files to send with `question`: those the user named, then the best matches.
 
     Raises ChatError if a file named in `extra_files` can't be used.
     """
     allowed = list_project_files(root).files
-    chosen = [extra_file(root, name, allowed) for name in extra_files]
+    chosen = [extra_file(root, name, allowed, extra_reason) for name in extra_files]
 
     terms = question_terms(question)
     taken = {file.path for file in chosen}
@@ -118,7 +119,12 @@ def rank(
     return sorted(scored, key=lambda item: (-item[1], str(item[0])))
 
 
-def extra_file(root: Path, name: str, allowed: list[PurePosixPath]) -> SelectedFile:
+def extra_file(
+    root: Path,
+    name: str,
+    allowed: list[PurePosixPath],
+    reason: str = "added with --file",
+) -> SelectedFile:
     """A file the user named with --file, after the same checks as any other."""
     given = Path(name)
     candidate = given if given.is_absolute() else root / given
@@ -137,4 +143,4 @@ def extra_file(root: Path, name: str, allowed: list[PurePosixPath]) -> SelectedF
     text = read_scannable_text(root / relative, relative)
     if text is None:
         raise ChatError(f"{name}: binary or larger than 1 MB")
-    return SelectedFile(relative, "added with --file", text)
+    return SelectedFile(relative, reason, text)

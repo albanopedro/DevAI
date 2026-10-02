@@ -98,7 +98,7 @@ def test_request_sends_the_same_context_and_the_schema(ollama):
     assert body["model"] == "qwen3.5:9b"
     assert body["stream"] is False
     assert body["format"] == flat_schema(AIReport)
-    assert body["options"] == {"temperature": 0, "num_ctx": 8192}
+    assert body["options"] == {"temperature": 0, "num_ctx": 16_384}
     system, user = body["messages"]
     assert system == {"role": "system", "content": SYSTEM_PROMPT}
     assert user["role"] == "user"

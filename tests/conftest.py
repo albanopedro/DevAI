@@ -14,6 +14,8 @@ if importlib.util.find_spec("pydantic") is None:
         "test_ollama_client.py",
         "test_opencode_client.py",
         "test_review_ai.py",
+        "test_chat_ai.py",
+        "test_chat_session.py",
     ]
 
 
@@ -129,3 +131,15 @@ def fake_review_report(issues=None, **overrides):
         limitations=["Only the changed lines were visible."],
     )
     return AIReviewReport(**(fields | overrides))
+
+
+def fake_chat_answer(sources=None, suggested_files=None, **overrides):
+    """A valid ChatAnswer, as a model would return it (requires [ai])."""
+    from devai.chat.schema import ChatAnswer
+
+    fields = dict(
+        answer="get_user raises Error(500) unconditionally, so every call fails.",
+        sources=["api/users.py:2"] if sources is None else sources,
+        suggested_files=[] if suggested_files is None else suggested_files,
+    )
+    return ChatAnswer(**(fields | overrides))

@@ -13,12 +13,14 @@ from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_setting
 from devai.analyzer import analyze_project
 from devai.chat import ChatError, Selection, build_chat_context, select_files
 from devai.checks import run_checks
-from devai.json_report import review_to_json, to_json
+from devai.json_report import chat_to_json, review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
 from devai.report import (
     SEPARATOR,
     format_ai_review_section,
     format_ai_section,
+    format_chat_answer,
+    format_chat_header,
     format_report,
     format_review,
     plural,
@@ -40,6 +42,18 @@ EXIT_USAGE = 2  # no command, bad path or invalid argument (argparse uses 2 too)
 EXIT_AI_ERROR = 3  # the AI step failed; the deterministic report was still printed
 
 FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
+
+# Shown on stderr while the model works, per AI task.
+PROGRESS = {
+    "analysis": "Analyzing with {model}…",
+    "review": "Reviewing with {model}…",
+    "chat": "Asking {model}…",
+}
+LOCAL_PROGRESS = {
+    "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
+    "review": "Reviewing locally with {model} (nothing leaves this machine)…",
+    "chat": "Asking {model} locally (nothing leaves this machine)…",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -107,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_ai_send_options(review)
 
     chat = subparsers.add_parser(
-        "chat", help="ask about a project (Phase 5a: preview with --dry-run)"
+        "chat", help="ask a free AI about a project, with files you approve"
     )
     chat.add_argument(
         "path",
@@ -115,7 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="project directory (default: current directory)",
     )
-    chat.add_argument("--ask", metavar="QUESTION", help="the question to ask")
+    chat.add_argument(
+        "--ask",
+        metavar="QUESTION",
+        help="ask one question and exit (without it: an interactive chat)",
+    )
     chat.add_argument(
         "--file",
         action="append",
@@ -134,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show exactly what would be sent, without sending it",
     )
+    add_ai_send_options(chat)
 
     return parser
 
@@ -291,17 +310,13 @@ def run_review(args: argparse.Namespace) -> int:
 
 def run_chat(args: argparse.Namespace) -> int:
     if not args.ask:
-        print_error(
-            'chat needs a question for now: devai chat --ask "..." --dry-run '
-            "(the interactive chat comes in Phase 5b)."
-        )
-        return EXIT_USAGE
-    if not args.dry_run:
-        print_error(
-            "Answering questions comes in Phase 5b. "
-            "Use --dry-run to preview what would be sent."
-        )
-        return EXIT_USAGE
+        if args.dry_run:
+            print_error('--dry-run needs a question: devai chat --ask "..." --dry-run')
+            return EXIT_USAGE
+        if not is_interactive():
+            print_error('the interactive chat needs a terminal; use --ask "..."')
+            return EXIT_USAGE
+        return run_chat_session(args)
 
     path = Path(args.path)
     try:
@@ -315,9 +330,90 @@ def run_chat(args: argparse.Namespace) -> int:
         print_error(str(problem))
         return EXIT_USAGE
 
-    context = build_chat_context(args.ask, info, run_checks(info), selection)
-    print(format_chat_preview(context, selection, args.format))
+    checks = run_checks(info)
+    context = build_chat_context(args.ask, info, checks, selection)
+    if args.dry_run:
+        print(format_chat_preview(context, selection, args.format))
+        return EXIT_OK
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "text":
+        # The files first: the user sees what would be sent before deciding.
+        print(format_chat_header(info.name, context), flush=True)
+    result, dropped, failed = ask_ai(client, settings, context, info.path, args.yes)
+    if args.format == "json":
+        print(chat_to_json(info.name, context, result, *dropped))
+    elif result:
+        print()
+        print(format_chat_answer(result, *dropped))
+    return EXIT_AI_ERROR if failed else EXIT_OK
+
+
+def run_chat_session(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.chat.session import ChatSession  # needs the [ai] extra
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    session = ChatSession(
+        info, run_checks(info), client, settings, read_line, print, args.yes
+    )
+    for name in args.file:  # --file pins files for the whole conversation
+        session.pin(name)
+    session.run()
     return EXIT_OK
+
+
+def read_line(prompt: str) -> str | None:
+    """One line typed in the terminal; None when the user leaves (Ctrl+D, Ctrl+C)."""
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
+def ask_ai(
+    client: LLMClient,
+    settings: AISettings,
+    context: dict,
+    root: Path,
+    assume_yes: bool,
+) -> tuple[AIResult | None, tuple[int, int], bool]:
+    """Returns (grounded result, (sources dropped, suggestions dropped), failed)."""
+    from devai.chat.ai import (  # needs the [ai] extra
+        chat_question,
+        chat_request,
+        ground_answer,
+    )
+
+    result, failed = run_ai(
+        client,
+        settings,
+        chat_request(context),
+        chat_question(context, settings),
+        assume_yes,
+        task="chat",
+    )
+    if result is None:
+        return None, (0, 0), failed
+    answer, dropped_sources, dropped_suggestions = ground_answer(
+        result.report, context, root
+    )
+    return replace(result, report=answer), (dropped_sources, dropped_suggestions), False
 
 
 def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:
@@ -358,16 +454,13 @@ def run_ai(
 
     Returns (result, failed).
     """
-    verb = "Reviewing" if task == "review" else "Analyzing"
     if settings.leaves_machine:
         if not assume_yes and not confirm_sending(settings, question):
             print(f"devai: AI {task} skipped. Nothing was sent.", file=sys.stderr)
             return None, False
-        progress = f"{verb} with {settings.model}…"
+        progress = PROGRESS[task].format(model=settings.model)
     else:
-        progress = (
-            f"{verb} locally with {settings.model} (nothing leaves this machine)…"
-        )
+        progress = LOCAL_PROGRESS[task].format(model=settings.model)
 
     print(progress, file=sys.stderr, flush=True)
     try:
