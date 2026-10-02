@@ -16,7 +16,13 @@ from devai.chat import ChatError, Selection, build_chat_context, select_files
 from devai.chat.retrieval import extra_file
 from devai.checks import run_checks
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
-from devai.json_report import chat_to_json, fix_to_json, review_to_json, to_json
+from devai.json_report import (
+    chat_to_json,
+    coverage_to_json,
+    fix_to_json,
+    review_to_json,
+    to_json,
+)
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
 from devai.report import (
     SEPARATOR,
@@ -24,6 +30,7 @@ from devai.report import (
     format_ai_section,
     format_chat_answer,
     format_chat_header,
+    format_coverage_map,
     format_fix_applied,
     format_fix_header,
     format_fix_proposal,
@@ -40,6 +47,7 @@ from devai.review import (
     run_review_checks,
 )
 from devai.review.context import build_review_context
+from devai.testmap import build_coverage_map
 
 # Same convention as linters such as ruff and eslint (D022).
 EXIT_OK = 0
@@ -203,6 +211,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(fix)
 
+    test = subparsers.add_parser(
+        "test", help="estimate where tests are missing (local, from names)"
+    )
+    test.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="project directory (default: current directory)",
+    )
+    test.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+
     return parser
 
 
@@ -251,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_chat(args)
     if args.command == "fix":
         return run_fix(args)
+    if args.command == "test":
+        return run_test(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -576,6 +602,22 @@ def apply_fix(root: Path, changes: list, tests: list[str]) -> int:
         return EXIT_AI_ERROR
 
     print(format_fix_applied(changes, tests))
+    return EXIT_OK
+
+
+def run_test(args: argparse.Namespace) -> int:
+    """Where tests seem to be missing. A map, not a check: always exit 0 (D045)."""
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    coverage = build_coverage_map(info)
+    if args.format == "json":
+        print(coverage_to_json(info.name, coverage))
+    else:
+        print(format_coverage_map(info.name, coverage))
     return EXIT_OK
 
 

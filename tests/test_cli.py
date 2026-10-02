@@ -228,7 +228,7 @@ def test_json_output_is_valid_json(tmp_path, capsys):
     assert document["checks"]["findings"][0]["rule_id"] == "secret/aws-access-key"
 
 
-# --- AI (Phase 3a: dry run only) ---------------------------------------------
+# --- AI (Phase 3a: dry run only) ------------------------------------------------------
 
 
 def test_ai_dry_run_shows_context_and_size(tmp_path, capsys):
@@ -270,7 +270,7 @@ def test_dry_run_requires_ai(tmp_path, capsys):
     assert "--dry-run requires --ai" in capsys.readouterr().err
 
 
-# --- AI (Phase 3b): the model is always a fake here, never the network -------
+# --- AI (Phase 3b): the model is always a fake here, never the network ----------------
 
 
 class FakeLLMClient:
@@ -472,7 +472,7 @@ def test_ai_text_is_stripped_of_control_characters(tmp_path, capsys, fake_ai):
     assert "Looks fine [2J [31m and more new line" in out  # each control char → space
 
 
-# --- providers (Phase 3.5) ---------------------------------------------------
+# --- providers (Phase 3.5) ------------------------------------------------------------
 
 
 def test_local_ollama_runs_without_asking(tmp_path, capsys, fake_ai):
@@ -530,7 +530,7 @@ def test_create_ai_client_picks_the_provider():
     assert isinstance(cli.create_ai_client(AISettings()), OpenCodeClient)
 
 
-# --- review (Phase 4a) ---------------------------------------------------------
+# --- review (Phase 4a) ----------------------------------------------------------------
 
 
 @pytest.fixture
@@ -631,7 +631,7 @@ def test_review_staged_and_base_are_exclusive(repo, capsys):
     assert exit_info.value.code == EXIT_USAGE
 
 
-# --- review --ai (Phase 4b: dry run only) ----------------------------------------
+# --- review --ai (Phase 4b: dry run only) ---------------------------------------------
 
 
 def test_review_ai_dry_run_lists_what_would_be_sent(repo, capsys):
@@ -675,7 +675,7 @@ def test_review_dry_run_requires_ai(repo, capsys):
     assert exit_info.value.code == EXIT_USAGE
 
 
-# --- review --ai (Phase 4c): the model is always a fake ----------------------------
+# --- review --ai (Phase 4c): the model is always a fake -------------------------------
 
 
 @pytest.fixture
@@ -819,7 +819,7 @@ def test_review_yes_requires_ai(repo, capsys):
     assert exit_info.value.code == EXIT_USAGE
 
 
-# --- chat (Phase 5a: dry run only) ------------------------------------------------
+# --- chat (Phase 5a: dry run only) ----------------------------------------------------
 
 
 @pytest.fixture
@@ -878,7 +878,7 @@ def test_chat_dry_run_makes_no_network_calls(chat_project, capsys, monkeypatch):
     assert main(["chat", str(chat_project), "--ask", "users", "--dry-run"]) == EXIT_OK
 
 
-# --- chat --ask with AI (Phase 5b, step 1): the model is always a fake --------------
+# --- chat --ask with AI (Phase 5b, step 1): the model is always a fake ----------------
 
 
 @pytest.fixture
@@ -1011,7 +1011,7 @@ def test_interactive_chat_runs_in_a_terminal(
     assert len(fake_chat_ai.requests) == 1
 
 
-# --- fix (Phase 6a): proposals only, nothing is ever written ------------------------
+# --- fix (Phase 6a): proposals only, nothing is ever written --------------------------
 
 
 STATS_PY = (
@@ -1281,3 +1281,73 @@ def test_no_edits_means_nothing_to_apply(fix_repo, capsys, fake_fix_ai, monkeypa
 
     assert apply(fix_repo) == EXIT_OK
     assert "Apply this fix" not in capsys.readouterr().err
+
+
+# --- test map (Phase 7a) --------------------------------------------------------------
+
+
+@pytest.fixture
+def map_project(tmp_path):
+    write(tmp_path, "src/app.py", "def run():\n    pass\n\n\ndef stop():\n    pass\n")
+    write(tmp_path, "src/cart.py", "class Cart:\n    pass\n")
+    write(
+        tmp_path,
+        "tests/test_app.py",
+        "from app import run\n\n\ndef test_run():\n    run()\n",
+    )
+    return tmp_path
+
+
+def test_test_map_text(map_project, capsys):
+    assert main(["test", str(map_project)]) == EXIT_OK
+
+    assert capsys.readouterr().out == (
+        "DEVAI TEST\n"
+        "────────────────────────────────────\n"
+        f"Project:  {map_project.name}\n"
+        "Tests:    1 file\n"
+        "Source:   2 files checked (Python)\n"
+        "\n"
+        "Without a matching test file (1):\n"
+        "  src/cart.py\n"
+        "\n"
+        "Python names no test mentions (2 in 2 files):\n"
+        "  src/app.py: stop\n"
+        "  src/cart.py: Cart\n"
+        "\n"
+        "An estimate from file and symbol names, not a coverage measurement:\n"
+        "code tested indirectly (through other functions) can look untested.\n"
+    )
+
+
+def test_test_map_json(map_project, capsys):
+    main(["test", str(map_project), "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)["test_map"]
+    assert document["without_tests"] == ["src/cart.py"]
+    assert document["untested_symbols"] == {
+        "src/app.py": ["stop"],
+        "src/cart.py": ["Cart"],
+    }
+    assert document["estimate"] is True
+
+
+def test_test_map_with_no_sources(tmp_path, capsys):
+    write(tmp_path, "README.md", "docs only\n")
+
+    assert main(["test", str(tmp_path)]) == EXIT_OK
+    assert "No Python, JavaScript or TypeScript source files" in capsys.readouterr().out
+
+
+def test_test_map_runs_nothing(map_project, capsys, monkeypatch):
+    import subprocess as subprocess_module
+
+    real_run = subprocess_module.run
+
+    def only_git(command, *args, **kwargs):
+        assert command[0] == "git", f"unexpected command: {command}"
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess_module, "run", only_git)
+
+    assert main(["test", str(map_project)]) == EXIT_OK

@@ -105,3 +105,25 @@ def fix_to_json(
             "diffs": {str(change.path): change.diff for change in changes},
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def coverage_to_json(name: str, coverage) -> str:
+    """`devai test` as JSON."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "test_map": {
+            "project": name,
+            "test_files": coverage.test_files,
+            "frameworks": list(coverage.frameworks),
+            "sources_checked": coverage.sources_checked,
+            "languages": list(coverage.languages),
+            "without_tests": [str(path) for path in coverage.without_tests],
+            "untested_symbols": {
+                str(path): list(symbols) for path, symbols in coverage.untested_symbols
+            },
+            "not_parsed": [str(path) for path in coverage.not_parsed],
+            "estimate": True,  # names only, not a coverage measurement
+        },
+    }
+    return json.dumps(document, indent=2, ensure_ascii=False)

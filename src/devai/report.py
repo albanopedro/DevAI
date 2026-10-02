@@ -434,3 +434,63 @@ def format_fix_applied(changes: list, tests: list[str]) -> str:
         lines += [line for test in tests for line in wrap(test, "  - ", "    ")]
     lines.append("Nothing was committed.")
     return "\n".join(lines)
+
+
+MAX_LISTED_UNTESTED = 30
+
+
+def format_coverage_map(name: str, coverage) -> str:
+    """Render `devai test`: an estimate of where tests are missing."""
+    if coverage.test_files:
+        frameworks = ", ".join(coverage.frameworks)
+        tests = f"{coverage.test_files} {plural(coverage.test_files, 'file')}"
+        tests += f" ({frameworks})" if frameworks else ""
+    else:
+        tests = "none found"
+    languages = ", ".join(coverage.languages) or "none"
+    lines = [
+        "DEVAI TEST",
+        SEPARATOR,
+        f"Project:  {printable(name)}",
+        f"Tests:    {tests}",
+        f"Source:   {coverage.sources_checked} "
+        f"{plural(coverage.sources_checked, 'file')} checked ({languages})",
+        "",
+    ]
+
+    missing = coverage.without_tests
+    if missing:
+        lines.append(f"Without a matching test file ({len(missing)}):")
+        lines += [f"  {printable(str(path))}" for path in missing[:MAX_LISTED_UNTESTED]]
+        if len(missing) > MAX_LISTED_UNTESTED:
+            lines.append(
+                f"  … and {len(missing) - MAX_LISTED_UNTESTED} more (see --format json)"
+            )
+    elif coverage.sources_checked:
+        lines.append("Every checked source file has a matching test file.")
+    else:
+        lines.append("No Python, JavaScript or TypeScript source files to check.")
+
+    if coverage.untested_symbols:
+        count = sum(len(symbols) for _, symbols in coverage.untested_symbols)
+        files = len(coverage.untested_symbols)
+        lines += [
+            "",
+            f"Python names no test mentions ({count} in {files} "
+            f"{plural(files, 'file')}):",
+        ]
+        for path, symbols in coverage.untested_symbols[:MAX_LISTED_UNTESTED]:
+            lines += wrap(f"{path}: {', '.join(symbols)}", "  ", "      ")
+    if coverage.not_parsed:
+        lines += [
+            "",
+            "Not parsed (invalid Python): "
+            + ", ".join(printable(str(path)) for path in coverage.not_parsed),
+        ]
+
+    lines += [
+        "",
+        "An estimate from file and symbol names, not a coverage measurement:",
+        "code tested indirectly (through other functions) can look untested.",
+    ]
+    return "\n".join(lines)

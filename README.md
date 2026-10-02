@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 6b: applying fixes).
+> **Status:** early development (Phase 7a: finding missing tests).
 
 ## Goal
 
@@ -224,6 +224,20 @@ How it works:
 - **The conversation is remembered locally.** Each question also sends the earlier questions and answers (the most recent ones that fit about 6,000 characters), so a follow-up like "and the POST route?" makes sense. Files from earlier questions are **not** resent unless they are picked or added again. `/clear` forgets the conversation.
 - **Consent as everywhere else:** OpenCode's free models get the question only after your `y`, a local Ollama doesn't ask, and `--yes` skips the question. Outside a terminal, use `--ask` with `--yes`. If the AI step fails, `--ask` exits with code `3`; in a conversation you can simply ask again.
 
+### Finding missing tests
+
+`devai test` estimates where tests are missing, locally and for free. It runs nothing: no tests, no project code.
+
+```bash
+devai test                 # text report
+devai test --format json   # for scripts
+```
+
+- **Source files without a matching test file**, by name: `report.py` is covered by `test_report.py` or `report_test.py`, `Cart.jsx` by `Cart.test.jsx`, `Cart.spec.jsx` or `__tests__/Cart.jsx`. Names are compared as words, so `test_apply.py` doesn't cover `app.py`. Python, JavaScript and TypeScript are checked; `__init__.py`, `conftest.py`, config files and type declarations are not.
+- **Python names no test mentions:** public top-level functions and classes (parsed with `ast`) whose name never appears in any test file.
+- **It's an estimate, and it says so.** Code tested indirectly, through other functions or the CLI, looks untested here. DevAI's own report shows this: its report formatters are tested through the CLI output, and they still appear in the list. Use it to choose where to look, not as a coverage number. (For real coverage, use a tool like `coverage.py` that runs your tests.)
+- Always exits `0`: it is a map. The `no-tests` finding of `devai analyze` stays the CI check.
+
 ### Proposing fixes
 
 `devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
@@ -356,6 +370,9 @@ src/devai/
 │   ├── schema.py          # FixProposal: find-and-replace edits, risks, tests
 │   ├── edits.py           # validation and the in-memory diff
 │   └── apply.py           # --apply: git and content checks, atomic all-or-nothing write
+├── testmap/          # `devai test`: where tests seem to be missing
+│   ├── pairing.py         # source ↔ test files by name words
+│   └── symbols.py         # public Python names no test mentions
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
@@ -386,7 +403,8 @@ tests/
 | 5b | Contextual Chat | Interactive `devai chat`: approve files per question, AI can suggest files, history kept locally |
 | 6a | Fix Proposals | `devai fix`: find-and-replace edits, strict validation, diff; nothing is written |
 | 6b | Applying Fixes | `devai fix --apply`: diff first, explicit approval, clean-git and unchanged-file checks, atomic write; never commits |
-| 7 | Test Generation | `devai test` |
+| 7a | Missing Tests | `devai test`: source files without a matching test, Python names no test mentions; an estimate, nothing executed |
+| 7b | Test Generation | `devai test --file X --ai`: AI-proposed tests, validated like fixes, created only after your "y"; never run by DevAI |
 | 8 | Documentation | `devai docs` |
 | 9 | Web Interface | FastAPI + React, Docker |
 | 10 | GitHub Integration | Repositories, pull requests, issues |
