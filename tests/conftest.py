@@ -10,7 +10,11 @@ import pytest
 # doesn't collect them. The rest of DevAI must work without any extra.
 collect_ignore = []
 if importlib.util.find_spec("pydantic") is None:
-    collect_ignore += ["test_ollama_client.py", "test_opencode_client.py"]
+    collect_ignore += [
+        "test_ollama_client.py",
+        "test_opencode_client.py",
+        "test_review_ai.py",
+    ]
 
 
 def make_files(root: Path, *relative_paths: str) -> None:
@@ -100,3 +104,28 @@ def fake_ai_report(**overrides):
         limitations=["Source code was not reviewed."],
     )
     return AIReport(**(fields | overrides))
+
+
+def fake_review_report(issues=None, **overrides):
+    """A valid AIReviewReport, as a model would return it (requires [ai])."""
+    from devai.review.schema import AIReviewReport, ReviewIssue
+
+    if issues is None:
+        issues = [
+            ReviewIssue(
+                file="app.py",
+                line=2,
+                severity="medium",
+                category="bug",
+                title="Changed return value",
+                explanation="main() now returns 2; callers expecting 1 may break.",
+                suggestion="Check the callers or keep returning 1.",
+            )
+        ]
+    fields = dict(
+        summary="Changes the value returned by main().",
+        issues=issues,
+        suggested_tests=["Test that main() returns the new value."],
+        limitations=["Only the changed lines were visible."],
+    )
+    return AIReviewReport(**(fields | overrides))

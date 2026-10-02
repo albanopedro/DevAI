@@ -3,11 +3,12 @@
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from devai import __version__
 from devai.ai import build_context, estimate_tokens, serialize_context
-from devai.ai.result import AIError, AIResult, LLMClient
+from devai.ai.result import AIError, AIRequest, AIResult, LLMClient
 from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
 from devai.checks import run_checks
@@ -15,6 +16,7 @@ from devai.json_report import review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
 from devai.report import (
     SEPARATOR,
+    format_ai_review_section,
     format_ai_section,
     format_report,
     format_review,
@@ -66,18 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --ai: show exactly what would be sent, without sending it",
     )
-    analyze.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="with --ai: send without asking (required when not in a terminal)",
-    )
-    analyze.add_argument(
-        "--provider",
-        choices=PROVIDERS,
-        help="with --ai: opencode (default, free models via your OpenCode CLI) or "
-        "ollama (local model); overrides DEVAI_AI_PROVIDER",
-    )
+    add_ai_send_options(analyze)
 
     review = subparsers.add_parser(
         "review", help="check the current git changes before committing"
@@ -103,15 +94,32 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--ai",
         action="store_true",
-        help="AI review of the changed code (Phase 4c); for now use it with --dry-run",
+        help="add a free AI review of the changed code (asks before sending; see "
+        "README)",
     )
     review.add_argument(
         "--dry-run",
         action="store_true",
         help="with --ai: show exactly what code would be sent, without sending it",
     )
+    add_ai_send_options(review)
 
     return parser
+
+
+def add_ai_send_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="with --ai: send without asking (required when not in a terminal)",
+    )
+    command.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        help="with --ai: opencode (default, free models via your OpenCode CLI) or "
+        "ollama (local model); overrides DEVAI_AI_PROVIDER",
+    )
 
 
 def add_output_options(command: argparse.ArgumentParser) -> None:
@@ -140,26 +148,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "review":
-        if args.dry_run and not args.ai:
-            parser.error("--dry-run requires --ai")
-        if args.ai and not args.dry_run:
-            print_error(
-                "AI review is not available yet (Phase 4c). "
-                "Use --ai --dry-run to preview what would be sent."
-            )
-            return EXIT_USAGE
-        return run_review(args)
-    if args.command != "analyze":
+    if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
-    if args.dry_run and not args.ai:
-        parser.error("--dry-run requires --ai")  # exits with code 2
-    if args.yes and not args.ai:
-        parser.error("--yes requires --ai")
-    if args.provider and not args.ai:
-        parser.error("--provider requires --ai")
-    return run_analyze(args)
+    for option in ("dry_run", "yes", "provider"):
+        if getattr(args, option) and not args.ai:
+            flag = "--" + option.replace("_", "-")
+            parser.error(f"{flag} requires --ai")  # exits with code 2
+    return run_review(args) if args.command == "review" else run_analyze(args)
 
 
 def run_analyze(args: argparse.Namespace) -> int:
@@ -186,13 +182,18 @@ def run_analyze(args: argparse.Namespace) -> int:
     ai_result, ai_failed = None, False
     if args.format == "json":
         if ai:
-            ai_result, ai_failed = run_ai(*ai, build_context(info, checks), args.yes)
+            ai_result, ai_failed = analyze_with_ai(
+                *ai, build_context(info, checks), args.yes
+            )
         print(to_json(info, checks, ai_result))
     else:
         # Show the report first: the user sees what is summarized before deciding.
-        print(format_report(info, checks))
+        # flush: when stdout is a pipe, it must still come out before the question.
+        print(format_report(info, checks), flush=True)
         if ai:
-            ai_result, ai_failed = run_ai(*ai, build_context(info, checks), args.yes)
+            ai_result, ai_failed = analyze_with_ai(
+                *ai, build_context(info, checks), args.yes
+            )
         if ai_result:
             print()
             print(format_ai_section(ai_result))
@@ -219,11 +220,37 @@ def run_review(args: argparse.Namespace) -> int:
         print(format_review_ai_preview(changes, checks, args.format))
         return EXIT_OK  # inspecting the context never fails the run
 
+    ai: tuple[LLMClient, AISettings] | None = None
+    if args.ai:
+        try:
+            ai = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        except (SettingsError, SetupError) as problem:
+            print_error(str(problem))
+            return EXIT_USAGE  # nothing was sent yet
+
     report = review_report(changes, checks)
+    ai_result, discarded, ai_failed = None, 0, False
     if args.format == "json":
-        print(review_to_json(report))
+        if ai:
+            ai_result, discarded, ai_failed = review_with_ai(
+                *ai, changes, checks, args.yes
+            )
+        print(review_to_json(report, ai_result, discarded))
     else:
-        print(format_review(report))
+        # The local review first: the user sees the changes before deciding.
+        # flush: when stdout is a pipe, it must still come out before the question.
+        print(format_review(report), flush=True)
+        if ai:
+            ai_result, discarded, ai_failed = review_with_ai(
+                *ai, changes, checks, args.yes
+            )
+        if ai_result:
+            print()
+            print(format_ai_review_section(ai_result, discarded))
+
+    if ai_failed:
+        return EXIT_AI_ERROR
+    # The AI's opinion never affects --fail-on (D028).
     return (
         EXIT_FINDINGS if should_fail(report.checks.findings, args.fail_on) else EXIT_OK
     )
@@ -256,42 +283,92 @@ def create_ai_client(settings: AISettings) -> LLMClient:
 
 
 def run_ai(
-    client: LLMClient, settings: AISettings, context: dict, assume_yes: bool
+    client: LLMClient,
+    settings: AISettings,
+    request: AIRequest,
+    question: str,
+    assume_yes: bool,
+    task: str = "analysis",
 ) -> tuple[AIResult | None, bool]:
-    """Ask for consent if data leaves the machine, then call the model.
+    """Ask `question` if data leaves the machine, then send `request`.
 
     Returns (result, failed).
     """
-    tokens = estimate_tokens(serialize_context(context))
+    verb = "Reviewing" if task == "review" else "Analyzing"
     if settings.leaves_machine:
-        if not assume_yes and not confirm_sending(settings, tokens):
-            print("devai: AI analysis skipped. Nothing was sent.", file=sys.stderr)
+        if not assume_yes and not confirm_sending(settings, question):
+            print(f"devai: AI {task} skipped. Nothing was sent.", file=sys.stderr)
             return None, False
-        progress = f"Analyzing with {settings.model}…"
+        progress = f"{verb} with {settings.model}…"
     else:
         progress = (
-            f"Analyzing locally with {settings.model} (nothing leaves this machine)…"
+            f"{verb} locally with {settings.model} (nothing leaves this machine)…"
         )
 
     print(progress, file=sys.stderr, flush=True)
     try:
-        return client.analyze(context), False
+        return client.complete(request), False
     except AIError as problem:
-        print_error(f"AI analysis failed: {problem}")
+        print_error(f"AI {task} failed: {problem}")
         return None, True
+
+
+def analyze_with_ai(
+    client: LLMClient, settings: AISettings, context: dict, assume_yes: bool
+) -> tuple[AIResult | None, bool]:
+    from devai.ai.analysis import analysis_request  # needs the [ai] extra
+
+    tokens = estimate_tokens(serialize_context(context))
+    question = (
+        f"Send a project summary (~{tokens:,} tokens, no source code) to "
+        f"{settings.destination}?"
+    )
+    return run_ai(client, settings, analysis_request(context), question, assume_yes)
+
+
+def review_with_ai(
+    client: LLMClient,
+    settings: AISettings,
+    changes: Changes,
+    checks: CheckReport,
+    assume_yes: bool,
+) -> tuple[AIResult | None, int, bool]:
+    """Returns (result with grounded issues, issues discarded, failed)."""
+    from devai.review.ai import (  # needs the [ai] extra
+        ground_issues,
+        review_question,
+        review_request,
+    )
+
+    context = build_review_context(changes, checks)
+    if not context["diffs"]:
+        print("devai: AI review skipped: no code can be sent.", file=sys.stderr)
+        return None, 0, False
+
+    result, failed = run_ai(
+        client,
+        settings,
+        review_request(context),
+        review_question(context, settings),
+        assume_yes,
+        task="review",
+    )
+    if result is None:
+        return None, 0, failed
+    report, discarded = ground_issues(result.report, context)
+    return replace(result, report=report), discarded, False
 
 
 def is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def confirm_sending(settings: AISettings, tokens: int) -> bool:
+def confirm_sending(settings: AISettings, question: str) -> bool:
     """Ask on stderr, so stdout stays clean for the report or JSON."""
     if settings.data_note:
         print(f"Note: {settings.data_note}.", file=sys.stderr)
     print(
-        f"Send a project summary (~{tokens:,} tokens, no source code) to "
-        f"{settings.destination}? Preview it with --dry-run. [y/N] ",
+        f"{question} Preview it with --dry-run. [y/N] ",
         end="",
         file=sys.stderr,
         flush=True,

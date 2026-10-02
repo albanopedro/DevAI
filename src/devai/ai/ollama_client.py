@@ -1,7 +1,7 @@
 """Run the AI analysis on a model served by Ollama, usually on this computer.
 
-Same system prompt, same context (D025) and same AIReport as the OpenCode
-client; only the transport differs. The API is one JSON POST, so this uses
+It transports an AIRequest (D037), like the OpenCode client; only the
+transport differs. The API is one JSON POST, so this uses
 urllib from the standard library instead of another dependency (D030).
 """
 
@@ -12,10 +12,9 @@ from typing import Any
 
 import pydantic
 
-from devai.ai.context import serialize_context
-from devai.ai.prompt import SYSTEM_PROMPT, build_user_message, schema_instructions
-from devai.ai.result import AIError, AIResult, AIUsage
-from devai.ai.schema import AIReport, report_schema
+from devai.ai.prompt import schema_instructions
+from devai.ai.result import AIError, AIRequest, AIResult, AIUsage
+from devai.ai.schema import flat_schema
 from devai.ai.settings import AISettings
 
 TIMEOUT_SECONDS = 300.0  # local models can be slow, especially on first load
@@ -32,20 +31,20 @@ class OllamaClient:
     def __init__(self, settings: AISettings):
         self.settings = settings
 
-    def analyze(self, context: dict[str, Any]) -> AIResult:
-        data = self.post("/api/chat", self.build_request(context))
-        return self.to_result(data)
+    def complete(self, request: AIRequest) -> AIResult:
+        data = self.post("/api/chat", self.build_body(request))
+        return self.to_result(data, request)
 
-    def build_request(self, context: dict[str, Any]) -> dict[str, Any]:
-        schema = report_schema()
-        user_message = build_user_message(serialize_context(context))
+    def build_body(self, request: AIRequest) -> dict[str, Any]:
+        schema = flat_schema(request.output)
         return {
             "model": self.settings.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": request.system_prompt},
                 {
                     "role": "user",
-                    "content": user_message + schema_instructions(json.dumps(schema)),
+                    "content": request.message
+                    + schema_instructions(json.dumps(schema)),
                 },
             ],
             "format": schema,  # Ollama constrains the answer to this schema
@@ -92,12 +91,12 @@ class OllamaClient:
             "Try a smaller model with DEVAI_AI_MODEL."
         )
 
-    def to_result(self, data: dict[str, Any]) -> AIResult:
+    def to_result(self, data: dict[str, Any], request: AIRequest) -> AIResult:
         if data.get("done_reason") == "length":
             raise AIError("The model's answer was cut off before it finished.")
         content = (data.get("message") or {}).get("content", "")
         try:
-            report = AIReport.model_validate_json(content)
+            report = request.output.model_validate_json(content)
         except pydantic.ValidationError as error:
             raise AIError(
                 "The model's answer did not match the expected report format."

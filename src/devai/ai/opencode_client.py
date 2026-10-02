@@ -7,6 +7,8 @@ locked down so the model sees only the AI context (D025):
 - an inline config (OPENCODE_CONFIG_CONTENT) defines a `devai` agent with
   DevAI's system prompt and every permission denied: no files, no commands;
 - the run happens in an empty temporary directory, deleted afterwards;
+- the task (analysis, review) supplies the prompt and the answer model
+  through an AIRequest (D037); this module only transports it;
 - only free `opencode/...` models are accepted (settings.py), and a run that
   reports any cost is treated as an error: DevAI must be free (D032).
 """
@@ -21,15 +23,13 @@ from typing import Any
 
 import pydantic
 
-from devai.ai.context import serialize_context
-from devai.ai.prompt import SYSTEM_PROMPT, build_user_message, schema_instructions
-from devai.ai.result import AIError, AIResult, AIUsage
-from devai.ai.schema import AIReport, report_schema
+from devai.ai.prompt import schema_instructions
+from devai.ai.result import AIError, AIRequest, AIResult, AIUsage
+from devai.ai.schema import flat_schema
 from devai.ai.settings import AISettings
 
 TIMEOUT_SECONDS = 300.0
 AGENT_NAME = "devai"
-SESSION_TITLE = "DevAI analysis"
 
 
 @dataclass
@@ -49,7 +49,7 @@ class OpenCodeClient:
         self.settings = settings
         self.executable = executable  # None: find `opencode` on PATH
 
-    def analyze(self, context: dict[str, Any]) -> AIResult:
+    def complete(self, request: AIRequest) -> AIResult:
         executable = self.executable or shutil.which("opencode")
         if executable is None:
             raise AIError(
@@ -57,10 +57,11 @@ class OpenCodeClient:
                 "(or see opencode.ai), or use --provider ollama."
             )
 
-        message = build_user_message(serialize_context(context)) + schema_instructions(
-            json.dumps(report_schema())
+        message = request.message + schema_instructions(
+            json.dumps(flat_schema(request.output))
         )
-        env = os.environ | {"OPENCODE_CONFIG_CONTENT": json.dumps(inline_config())}
+        config = inline_config(request.system_prompt)
+        env = os.environ | {"OPENCODE_CONFIG_CONTENT": json.dumps(config)}
         with tempfile.TemporaryDirectory(prefix="devai-opencode-") as empty_dir:
             command = [
                 executable,
@@ -74,7 +75,7 @@ class OpenCodeClient:
                 "--dir",
                 empty_dir,
                 "--title",
-                SESSION_TITLE,
+                request.title,
                 message,
             ]
             try:
@@ -93,9 +94,9 @@ class OpenCodeClient:
 
         if completed.returncode != 0:
             raise AIError(explain_failure(completed.stderr or completed.stdout))
-        return self.to_result(parse_events(completed.stdout))
+        return self.to_result(parse_events(completed.stdout), request)
 
-    def to_result(self, run: RunOutput) -> AIResult:
+    def to_result(self, run: RunOutput, request: AIRequest) -> AIResult:
         if run.errors:
             raise AIError(explain_failure(run.errors[-1]))
         if run.cost > 0:
@@ -110,7 +111,7 @@ class OpenCodeClient:
             raise AIError("OpenCode returned no answer.")
 
         try:
-            report = AIReport.model_validate_json(strip_code_fence(run.texts[-1]))
+            report = request.output.model_validate_json(strip_code_fence(run.texts[-1]))
         except pydantic.ValidationError as error:
             raise AIError(
                 "The model's answer did not match the expected report format. "
@@ -123,15 +124,15 @@ class OpenCodeClient:
         )
 
 
-def inline_config() -> dict[str, Any]:
+def inline_config(system_prompt: str) -> dict[str, Any]:
     """OpenCode config for this run only: a `devai` agent that can't use tools."""
     return {
         "permission": {"*": "deny"},
         "agent": {
             AGENT_NAME: {
                 "mode": "primary",
-                "description": "DevAI project analysis (no tools)",
-                "prompt": SYSTEM_PROMPT,
+                "description": "DevAI (no tools)",
+                "prompt": system_prompt,
                 "permission": {"*": "deny"},
             }
         },

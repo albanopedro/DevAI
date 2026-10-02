@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import subprocess
 import sys
 
@@ -7,6 +8,7 @@ import pytest
 from conftest import (
     FAKE_SECRETS,
     fake_ai_report,
+    fake_review_report,
     git_commit,
     git_run,
     make_files,
@@ -271,17 +273,27 @@ def test_dry_run_requires_ai(tmp_path, capsys):
 
 class FakeLLMClient:
     def __init__(self, result=None, error=None):
-        self.contexts = []
+        self.requests = []
         self.result = result or AIResult(
             fake_ai_report(), "fake-model", AIUsage(10, 20)
         )
         self.error = error
 
-    def analyze(self, context):
-        self.contexts.append(context)
+    def complete(self, request):
+        self.requests.append(request)
         if self.error:
             raise self.error
         return self.result
+
+    @property
+    def contexts(self):
+        """The contexts actually sent: the JSON between the request's tags."""
+        return [extract_tagged_json(request.message) for request in self.requests]
+
+
+def extract_tagged_json(message):
+    match = re.search(r"<(\w+)>\n(.*)\n</\1>", message, re.DOTALL)
+    return json.loads(match.group(2))
 
 
 @pytest.fixture
@@ -654,13 +666,152 @@ def test_review_ai_dry_run_makes_no_network_calls(repo, capsys, monkeypatch):
     assert main(["review", str(repo), "--ai", "--dry-run"]) == EXIT_OK
 
 
-def test_review_ai_without_dry_run_is_not_available_yet(repo, capsys):
-    assert main(["review", str(repo), "--ai"]) == EXIT_USAGE
-    assert "Phase 4c" in capsys.readouterr().err
-
-
 def test_review_dry_run_requires_ai(repo, capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["review", str(repo), "--dry-run"])
+
+    assert exit_info.value.code == EXIT_USAGE
+
+
+# --- review --ai (Phase 4c): the model is always a fake ----------------------------
+
+
+@pytest.fixture
+def fake_review_ai(fake_ai):
+    fake_ai.result = AIResult(fake_review_report(), "fake-model", AIUsage(30, 40))
+    return fake_ai
+
+
+def change_app(repo):
+    write(repo, "app.py", "def main():\n    return 2\n")
+
+
+def test_review_ai_adds_the_ai_review_section(repo, capsys, fake_review_ai):
+    change_app(repo)
+
+    assert main(["review", str(repo), "--ai", "--yes"]) == EXIT_OK
+
+    captured = capsys.readouterr()
+    out = captured.out
+    assert out.index("DEVAI REVIEW") < out.index("AI REVIEW (fake-model)")
+    assert "  ⚠ MEDIUM  [bug] Changed return value\n            app.py:2\n" in out
+    assert "Suggestion: Check the callers or keep returning 1." in out
+    assert "Tokens: 30 in / 40 out" in out
+    assert "Reviewing with opencode/space-bunny-free…" in captured.err
+    assert fake_review_ai.requests[0].title == "DevAI review"
+
+
+def test_review_ai_sends_the_same_context_as_the_dry_run(repo, capsys, fake_review_ai):
+    change_app(repo)
+    main(["review", str(repo), "--ai", "--dry-run", "--format", "json"])
+    previewed = json.loads(capsys.readouterr().out)
+
+    main(["review", str(repo), "--ai", "--yes"])
+
+    assert fake_review_ai.contexts == [previewed]
+
+
+def test_review_ai_consent_lists_the_files(repo, capsys, fake_review_ai, monkeypatch):
+    change_app(repo)
+    answer(monkeypatch, "n\n")
+
+    assert main(["review", str(repo), "--ai"]) == EXIT_OK
+
+    err = capsys.readouterr().err
+    assert "Send the changed code of 1 file (~" in err
+    assert "Files: app.py. Preview it with --dry-run. [y/N]" in err
+    assert "AI review skipped. Nothing was sent." in err
+    assert fake_review_ai.requests == []
+
+
+def test_review_ai_without_terminal_needs_yes(repo, capsys, fake_review_ai):
+    change_app(repo)
+
+    assert main(["review", str(repo), "--ai"]) == EXIT_USAGE
+    assert fake_review_ai.requests == []
+
+
+def test_review_ai_with_local_ollama_does_not_ask(repo, capsys, fake_review_ai):
+    change_app(repo)
+
+    assert main(["review", str(repo), "--ai", "--provider", "ollama"]) == EXIT_OK
+    assert "Reviewing locally with qwen3.5:9b" in capsys.readouterr().err
+
+
+def test_review_ai_skipped_when_no_code_can_be_sent(repo, capsys, fake_review_ai):
+    write(repo, ".env", "SECRET=1\n")  # the only change: never sent
+
+    assert main(["review", str(repo), "--ai", "--yes"]) == EXIT_OK
+
+    assert "no code can be sent" in capsys.readouterr().err
+    assert fake_review_ai.requests == []
+
+
+def test_review_ai_discards_issues_about_unseen_files(repo, capsys, fake_review_ai):
+    from devai.review.schema import ReviewIssue
+
+    unseen = ReviewIssue(
+        file="secret_config.py",
+        line=1,
+        severity="high",
+        category="security",
+        title="Invented",
+        explanation="Not in the diff.",
+        suggestion="None.",
+    )
+    fake_review_ai.result = AIResult(
+        fake_review_report(issues=[unseen]), "fake-model", AIUsage(1, 1)
+    )
+    change_app(repo)
+
+    main(["review", str(repo), "--ai", "--yes"])
+
+    out = capsys.readouterr().out
+    assert "Invented" not in out
+    assert "Discarded 1 issue about files whose code the AI didn't see." in out
+
+
+def test_review_ai_json(repo, capsys, fake_review_ai):
+    change_app(repo)
+
+    main(["review", str(repo), "--ai", "--yes", "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["ai"]["model"] == "fake-model"
+    assert document["ai"]["discarded_issues"] == 0
+    assert document["ai"]["report"]["issues"][0]["file"] == "app.py"
+
+
+def test_review_ai_failure_still_prints_the_review(repo, capsys, fake_review_ai):
+    fake_review_ai.error = AIError("OpenCode is not installed.")
+    change_app(repo)
+
+    assert main(["review", str(repo), "--ai", "--yes"]) == EXIT_AI_ERROR
+
+    captured = capsys.readouterr()
+    assert "DEVAI REVIEW" in captured.out
+    assert "AI review failed: OpenCode is not installed." in captured.err
+
+
+def test_review_fail_on_ignores_the_ai_opinion(repo, capsys, fake_review_ai):
+    write(repo, "app.py", "def main():\n    return 2\n")
+    write(repo, "tests/test_app.py", "def test_main():\n    assert main() == 2\n")
+
+    args = ["review", str(repo), "--ai", "--yes", "--fail-on", "low"]
+    assert main(args) == EXIT_OK  # the fake AI reports a MEDIUM issue
+
+
+def test_review_paid_model_is_refused(repo, capsys, fake_review_ai, monkeypatch):
+    monkeypatch.setenv("DEVAI_AI_MODEL", "opencode/claude-opus-5-5")
+    change_app(repo)
+
+    assert main(["review", str(repo), "--ai", "--yes"]) == EXIT_USAGE
+    assert "only uses OpenCode's free models" in capsys.readouterr().err
+    assert fake_review_ai.requests == []
+
+
+def test_review_yes_requires_ai(repo, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["review", str(repo), "--yes"])
 
     assert exit_info.value.code == EXIT_USAGE

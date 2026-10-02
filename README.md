@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 4b: AI review context).
+> **Status:** early development (Phase 4c: AI review).
 
 ## Goal
 
@@ -157,6 +157,7 @@ devai review                          # working tree vs HEAD (staged, unstaged, 
 devai review --staged                 # exactly what the next commit would contain
 devai review --base main              # committed changes since the branch left main
 devai review --staged --fail-on high  # e.g. as a pre-commit check (exit 1 on HIGH)
+devai review --ai                     # plus a free AI review of the changed code
 ```
 
 | Severity | Rule | What it means |
@@ -174,9 +175,20 @@ How it reads your changes:
 - **The report never contains your code**: only file names, line counts and findings, in text and JSON.
 - `--format json` and `--fail-on` work as in `analyze`. Outside a git repository, or with an unknown `--base`, the exit code is `2`.
 
-#### AI review: what would be sent
+#### AI review
 
-An AI review of the changed code is being built in two steps. **Phase 4b** (current) builds the package and lets you inspect it: `devai review --ai --dry-run` shows exactly which code would be sent, makes no network call, and estimates the size. **Phase 4c** will send it, for free, to OpenCode's free models or a local Ollama, after asking.
+`devai review --ai` adds a free AI review of the changed code: what the change does, issues with file, line, severity, category and a suggested fix, tests the change should have, and what the AI couldn't judge. It uses the same free providers as `analyze --ai` (OpenCode's free models by default, or a local Ollama) and the same options (`--dry-run`, `--yes`, `--provider`, `--format json`).
+
+```bash
+devai review --ai --dry-run   # 1. see exactly which code would be sent
+devai review --ai             # 2. send it, after confirming the list of files
+```
+
+- **You see the list of files first.** DevAI prints the local review, then asks: *"Send the changed code of 2 files (~1,200 tokens) to OpenCode (…, free model)? Files: src/app.py, tests/test_app.py."* Local Ollama runs without asking. If no code can be sent (for example, only a `.env` changed), the AI step is skipped.
+- **Issues are checked against what the AI saw.** An issue about a file whose code wasn't sent is discarded, and a line number outside the shown hunks is cleared. The report says how many issues were discarded.
+- **Never affects `--fail-on`**, and if the AI step fails you still get the local review, with exit code `3`.
+
+What would be sent:
 
 | Sent | Never sent |
 |---|---|
@@ -258,7 +270,8 @@ src/devai/
 │   ├── schema.py     # AIReport: the structure the model must answer with
 │   ├── opencode_client.py   # free models via your `opencode run` (subprocess)
 │   ├── ollama_client.py     # local models via Ollama's HTTP API (urllib)
-│   ├── result.py     # AIResult, AIError, LLMClient interface (no dependencies)
+│   ├── result.py     # AIRequest, AIResult, LLMClient interface (no dependencies)
+│   ├── analysis.py   # the analysis task: prompt + context → AIRequest
 │   └── settings.py   # provider, model, OLLAMA_HOST; rejects paid models
 ├── models.py         # data models (ProjectInfo, Finding, CheckReport...)
 ├── git.py            # small subprocess wrapper around the git CLI
@@ -278,7 +291,9 @@ src/devai/
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
-    └── context.py         # what an AI review may receive: hunks, redaction, limits
+    ├── context.py         # what an AI review may receive: hunks, redaction, limits
+    ├── ai.py              # the review task: prompt, consent question, grounding
+    └── schema.py          # AIReviewReport: the structure the review must have
 tests/
 ```
 

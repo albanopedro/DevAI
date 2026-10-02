@@ -1,4 +1,8 @@
-"""What an AI analysis returns, and how it fails.
+"""The contract between an AI task (analysis, review) and a client (D037).
+
+A task builds an AIRequest: the instructions, the message with its delimited
+context, and the Pydantic model the answer must match. A client (OpenCode,
+Ollama) only transports it and validates the answer against that model.
 
 No third-party imports here, so report.py and json_report.py can use these
 types even when the optional [ai] extra is not installed.
@@ -10,11 +14,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from devai.ai.schema import AIReport
+    from pydantic import BaseModel
 
 
 class AIError(Exception):
     """The AI step failed. The message is safe to show to the user."""
+
+
+@dataclass(frozen=True)
+class AIRequest:
+    system_prompt: str
+    message: str  # the task's text with its delimited context; clients add the schema
+    output: type[BaseModel]  # the answer must validate against this model
+    title: str = "DevAI"  # shown where a client keeps history (OpenCode sessions)
 
 
 @dataclass(frozen=True)
@@ -25,12 +37,12 @@ class AIUsage:
 
 @dataclass(frozen=True)
 class AIResult:
-    report: AIReport
+    report: Any  # an instance of the request's `output` model
     model: str
     usage: AIUsage
 
 
 class LLMClient(Protocol):
-    """Anything that can turn an AI context into an AIResult (OpenCode, Ollama...)."""
+    """Anything that can answer an AIRequest (OpenCode, Ollama...)."""
 
-    def analyze(self, context: dict[str, Any]) -> AIResult: ...
+    def complete(self, request: AIRequest) -> AIResult: ...

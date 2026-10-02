@@ -8,14 +8,16 @@ import pytest
 from conftest import fake_ai_report
 
 from devai.ai import ollama_client
+from devai.ai.analysis import analysis_request
 from devai.ai.context import serialize_context
 from devai.ai.ollama_client import OllamaClient
 from devai.ai.prompt import SYSTEM_PROMPT, build_user_message
 from devai.ai.result import AIError, AIUsage
-from devai.ai.schema import report_schema
+from devai.ai.schema import AIReport, flat_schema
 from devai.ai.settings import AISettings
 
 CONTEXT = {"context_version": 1, "project": {"name": "demo"}, "findings": []}
+REQUEST = analysis_request(CONTEXT)
 
 
 class StubOllama:
@@ -89,13 +91,13 @@ def client_for(stub, model="qwen3.5:9b"):
 
 
 def test_request_sends_the_same_context_and_the_schema(ollama):
-    client_for(ollama).analyze(CONTEXT)
+    client_for(ollama).complete(REQUEST)
 
     [(path, body)] = ollama.requests
     assert path == "/api/chat"
     assert body["model"] == "qwen3.5:9b"
     assert body["stream"] is False
-    assert body["format"] == report_schema()
+    assert body["format"] == flat_schema(AIReport)
     assert body["options"] == {"temperature": 0, "num_ctx": 8192}
     system, user = body["messages"]
     assert system == {"role": "system", "content": SYSTEM_PROMPT}
@@ -105,15 +107,15 @@ def test_request_sends_the_same_context_and_the_schema(ollama):
 
 
 def test_schema_is_flat():
-    text = json.dumps(report_schema())
+    text = json.dumps(flat_schema(AIReport))
 
     assert "$ref" not in text and "$defs" not in text
-    risk = report_schema()["properties"]["risks"]["items"]
+    risk = flat_schema(AIReport)["properties"]["risks"]["items"]
     assert risk["properties"]["severity"]["enum"] == ["high", "medium", "low"]
 
 
 def test_result_is_parsed_and_validated(ollama):
-    result = client_for(ollama).analyze(CONTEXT)
+    result = client_for(ollama).complete(REQUEST)
 
     assert result.report == fake_ai_report()
     assert result.model == "qwen3.5:9b"
@@ -125,7 +127,7 @@ def test_http_proxy_settings_are_ignored(ollama, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
 
-    client_for(ollama).analyze(CONTEXT)
+    client_for(ollama).complete(REQUEST)
 
     assert len(ollama.requests) == 1
 
@@ -138,7 +140,7 @@ def test_missing_model(ollama):
     ollama.body = {"error": 'model "qwen3.5:9b" not found, try pulling it first'}
 
     with pytest.raises(AIError, match=r"Run: ollama pull qwen3\.5:9b"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)
 
 
 def test_other_http_errors(ollama):
@@ -146,7 +148,7 @@ def test_other_http_errors(ollama):
     ollama.body = {"error": "out of memory"}
 
     with pytest.raises(AIError, match="HTTP 500: out of memory"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)
 
 
 def test_ollama_not_running():
@@ -156,7 +158,7 @@ def test_ollama_not_running():
     settings = AISettings(provider="ollama", ollama_host=f"http://127.0.0.1:{port}")
 
     with pytest.raises(AIError, match="Ollama is not running.*ollama serve"):
-        OllamaClient(settings).analyze(CONTEXT)
+        OllamaClient(settings).complete(REQUEST)
 
 
 def test_timeout(ollama, monkeypatch):
@@ -164,25 +166,25 @@ def test_timeout(ollama, monkeypatch):
     ollama.delay = 1.0
 
     with pytest.raises(AIError, match="took more than"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)
 
 
 def test_answer_not_matching_the_schema(ollama):
     ollama.body["message"]["content"] = '{"summary": "only this"}'
 
     with pytest.raises(AIError, match="did not match the expected report format"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)
 
 
 def test_answer_cut_off(ollama):
     ollama.body["done_reason"] = "length"
 
     with pytest.raises(AIError, match="cut off"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)
 
 
 def test_response_that_is_not_json(ollama):
     ollama.body = b"<html>not ollama</html>"
 
     with pytest.raises(AIError, match="not JSON"):
-        client_for(ollama).analyze(CONTEXT)
+        client_for(ollama).complete(REQUEST)

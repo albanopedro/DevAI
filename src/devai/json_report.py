@@ -28,11 +28,20 @@ def to_json(info: ProjectInfo, checks: CheckReport, ai: AIResult | None = None) 
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
 
 
-def review_to_json(report: ReviewReport) -> str:
+def review_to_json(
+    report: ReviewReport, ai: AIResult | None = None, discarded: int = 0
+) -> str:
     """`devai review` as JSON. Like the text report, it never contains code."""
     document = {
         "schema_version": SCHEMA_VERSION,
         "devai_version": __version__,
         "review": asdict(report),
     }
+    if ai is not None:  # an added key: still schema version 1 (D023)
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "report": ai.report.model_dump(mode="json"),
+            "discarded_issues": discarded,
+        }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)

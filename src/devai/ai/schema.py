@@ -31,14 +31,14 @@ class AIReport(BaseModel):
     )
 
 
-def report_schema() -> dict[str, Any]:
-    """AIReport's JSON Schema with every $ref replaced by its definition.
+def flat_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """`model`'s JSON Schema with every $ref replaced by its definition.
 
     Not every model runtime handles $defs/$ref (Ollama's support is
-    undocumented), so the schema is sent flat. AIReport isn't recursive, so
-    inlining always terminates.
+    undocumented), so schemas are sent flat. DevAI's answer models aren't
+    recursive, so inlining always terminates.
     """
-    schema = AIReport.model_json_schema()
+    schema = model.model_json_schema()
     definitions = schema.get("$defs", {})
 
     def inline(node: Any) -> Any:

@@ -265,3 +265,48 @@ def describe_counts(file: ChangedFile) -> str:
     if file.deletions:
         parts.append(f"-{file.deletions}")
     return " ".join(parts)
+
+
+def format_ai_review_section(result: AIResult, discarded: int = 0) -> str:
+    """Render the AI review. Every string in it is model output: untrusted."""
+    report = result.report
+    lines = [f"AI REVIEW ({printable(result.model)})", SEPARATOR, "Summary:"]
+    lines += wrap(report.summary, "  ")
+
+    lines += ["", "Issues:"]
+    for issue in report.issues:
+        title = f"[{printable(issue.category)}] {printable(issue.title)}"
+        lines.append(f"  ⚠ {issue.severity.upper():<6}  {title}")
+        location = printable(issue.file)
+        if issue.line is not None:
+            location += f":{issue.line}"
+        lines.append(f"{'':12}{location}")
+        lines += wrap(issue.explanation, " " * 12)
+        lines += wrap(f"Suggestion: {issue.suggestion}", " " * 12)
+    if not report.issues:
+        lines.append("  none")
+
+    lines += ["", "Suggested tests:"]
+    for test in report.suggested_tests:
+        lines += wrap(test, "  - ", "    ")
+    if not report.suggested_tests:
+        lines.append("  none")
+
+    lines += ["", "Limitations:"]
+    for limitation in report.limitations:
+        lines += wrap(limitation, "  - ", "    ")
+    if not report.limitations:
+        lines.append("  none")
+
+    lines.append("")
+    if discarded:
+        noun = "issue" if discarded == 1 else "issues"
+        lines.append(
+            f"Discarded {discarded} {noun} about files whose code the AI didn't see."
+        )
+    usage = result.usage
+    lines += [
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI from the changed lines only, not the whole project.",
+    ]
+    return "\n".join(lines)
