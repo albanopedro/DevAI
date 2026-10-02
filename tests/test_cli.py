@@ -9,6 +9,7 @@ from conftest import (
     FAKE_SECRETS,
     fake_ai_report,
     fake_chat_answer,
+    fake_fix_proposal,
     fake_review_report,
     git_commit,
     git_run,
@@ -1008,3 +1009,142 @@ def test_interactive_chat_runs_in_a_terminal(
     assert "DEVAI CHAT · " in out
     assert "Added README.md: it goes with every next question." in out
     assert len(fake_chat_ai.requests) == 1
+
+
+# --- fix (Phase 6a): proposals only, nothing is ever written ------------------------
+
+
+STATS_PY = (
+    "def average(values):\n"
+    "    return sum(values) / len(values)\n"
+    "\n"
+    "\n"
+    "def percent(part, whole):\n"
+    "    return part / whole * 100\n"
+)
+
+
+@pytest.fixture
+def fix_project(tmp_path):
+    write(tmp_path, "stats.py", STATS_PY)
+    write(tmp_path, "tests/test_stats.py", "def test_ok():\n    assert True\n")
+    return tmp_path
+
+
+@pytest.fixture
+def fake_fix_ai(fake_ai):
+    fake_ai.result = AIResult(fake_fix_proposal(), "fake-model", AIUsage(70, 80))
+    return fake_ai
+
+
+def snapshot(root):
+    """Every file's bytes: proof that nothing was written."""
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def fix(project, *extra):
+    return main(
+        ["fix", str(project), "--file", "stats.py", "--ask", "handle zero", *extra]
+    )
+
+
+def test_fix_shows_a_validated_diff_and_writes_nothing(
+    fix_project, capsys, fake_fix_ai
+):
+    before = snapshot(fix_project)
+
+    assert fix(fix_project, "--yes") == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert out.index("DEVAI FIX") < out.index("PROPOSED FIX (fake-model)")
+    assert "--- a/stats.py\n+++ b/stats.py\n" in out
+    assert '+        raise ValueError("whole must not be zero")\n' in out
+    assert "Nothing was changed. Applying a fix comes in Phase 6b." in out
+    assert snapshot(fix_project) == before
+
+
+def test_rejected_proposal_exits_3_and_writes_nothing(fix_project, capsys, fake_fix_ai):
+    from devai.fix.schema import FixEdit
+
+    fake_fix_ai.result = AIResult(
+        fake_fix_proposal(
+            edits=[FixEdit(file="stats.py", old_text="nope", new_text="x", reason="r")]
+        ),
+        "fake-model",
+        AIUsage(1, 1),
+    )
+    before = snapshot(fix_project)
+
+    assert fix(fix_project, "--yes") == EXIT_AI_ERROR
+
+    captured = capsys.readouterr()
+    assert "The proposed fix was rejected: edit 1: text not found" in captured.err
+    assert "PROPOSED FIX" not in captured.out
+    assert snapshot(fix_project) == before
+
+
+def test_fix_sends_the_same_context_as_the_dry_run(fix_project, capsys, fake_fix_ai):
+    fix(fix_project, "--dry-run", "--format", "json")
+    previewed = json.loads(capsys.readouterr().out)
+
+    fix(fix_project, "--yes")
+
+    assert fake_fix_ai.contexts == [previewed]
+
+
+def test_fix_consent_lists_the_files(fix_project, capsys, fake_fix_ai, monkeypatch):
+    answer(monkeypatch, "n\n")
+
+    assert fix(fix_project) == EXIT_OK
+
+    err = capsys.readouterr().err
+    assert "Send the request + 1 file (~" in err
+    assert "Files: stats.py." in err
+    assert fake_fix_ai.requests == []
+
+
+def test_fix_json(fix_project, capsys, fake_fix_ai):
+    fix(fix_project, "--yes", "--format", "json")
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["fix"]["applied"] is False
+    assert document["ai"]["rejected"] is None
+    assert document["ai"]["diffs"]["stats.py"].startswith("--- a/stats.py")
+
+
+def test_fix_requires_file_and_ask(fix_project, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["fix", str(fix_project), "--ask", "x"])
+    assert exit_info.value.code == EXIT_USAGE
+
+    with pytest.raises(SystemExit):
+        main(["fix", str(fix_project), "--file", "stats.py"])
+
+
+def test_fix_at_most_three_files(fix_project, capsys):
+    args = ["fix", str(fix_project), "--ask", "x"]
+    for name in ["a.py", "b.py", "c.py", "d.py"]:
+        args += ["--file", name]
+
+    assert main(args) == EXIT_USAGE
+    assert "at most 3 files" in capsys.readouterr().err
+
+
+def test_fix_file_gets_the_same_checks(fix_project, capsys, fake_fix_ai):
+    write(fix_project, ".env", "SECRET=1\n")
+    args = ["fix", str(fix_project), "--file", ".env", "--ask", "x", "--yes"]
+
+    assert main(args) == EXIT_USAGE
+    assert "never sent" in capsys.readouterr().err
+    assert fake_fix_ai.requests == []
+
+
+def test_fix_paid_model_is_refused(fix_project, capsys, fake_fix_ai, monkeypatch):
+    monkeypatch.setenv("DEVAI_AI_MODEL", "anthropic/claude-sonnet-5-5")
+
+    assert fix(fix_project, "--yes") == EXIT_USAGE
+    assert fake_fix_ai.requests == []

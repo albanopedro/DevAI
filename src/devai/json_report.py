@@ -76,3 +76,32 @@ def chat_to_json(
             "dropped_suggestions": dropped_suggestions,
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def fix_to_json(
+    name: str,
+    context: dict,
+    ai: AIResult | None,
+    changes: list,
+    rejected: str | None,
+) -> str:
+    """A fix proposal as JSON: the files, the proposal, the diff (nothing applied)."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "fix": {
+            "project": name,
+            "request": context["request"],
+            "files": [file["path"] for file in context["files"]],
+            "applied": False,
+        },
+    }
+    if ai is not None:
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "proposal": ai.report.model_dump(mode="json"),
+            "rejected": rejected,
+            "diffs": {str(change.path): change.diff for change in changes},
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)

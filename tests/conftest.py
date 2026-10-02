@@ -16,6 +16,8 @@ if importlib.util.find_spec("pydantic") is None:
         "test_review_ai.py",
         "test_chat_ai.py",
         "test_chat_session.py",
+        "test_fix_edits.py",
+        "test_fix_ai.py",
     ]
 
 
@@ -143,3 +145,30 @@ def fake_chat_answer(sources=None, suggested_files=None, **overrides):
         suggested_files=[] if suggested_files is None else suggested_files,
     )
     return ChatAnswer(**(fields | overrides))
+
+
+def fake_fix_proposal(edits=None, **overrides):
+    """A valid FixProposal, as a model would return it (requires [ai])."""
+    from devai.fix.schema import FixEdit, FixProposal
+
+    if edits is None:
+        edits = [
+            FixEdit(
+                file="stats.py",
+                old_text="def percent(part, whole):\n    return part / whole * 100",
+                new_text=(
+                    "def percent(part, whole):\n"
+                    "    if whole == 0:\n"
+                    '        raise ValueError("whole must not be zero")\n'
+                    "    return part / whole * 100"
+                ),
+                reason="Avoid ZeroDivisionError",
+            )
+        ]
+    fields = dict(
+        summary="Reject a zero total with a clear error.",
+        edits=edits,
+        risks=["Callers that expected ZeroDivisionError now get ValueError."],
+        tests=["Test that percent(1, 0) raises ValueError."],
+    )
+    return FixProposal(**(fields | overrides))

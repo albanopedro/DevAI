@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 5b: free AI chat).
+> **Status:** early development (Phase 6a: fix proposals).
 
 ## Goal
 
@@ -224,6 +224,26 @@ How it works:
 - **The conversation is remembered locally.** Each question also sends the earlier questions and answers (the most recent ones that fit about 6,000 characters), so a follow-up like "and the POST route?" makes sense. Files from earlier questions are **not** resent unless they are picked or added again. `/clear` forgets the conversation.
 - **Consent as everywhere else:** OpenCode's free models get the question only after your `y`, a local Ollama doesn't ask, and `--yes` skips the question. Outside a terminal, use `--ask` with `--yes`. If the AI step fails, `--ask` exits with code `3`; in a conversation you can simply ask again.
 
+### Proposing fixes
+
+`devai fix` asks a free AI for a fix and shows it as a diff. **In Phase 6a it never writes to your project**: applying a fix, after your approval, comes in Phase 6b.
+
+```bash
+devai fix --file src/stats.py --ask "percent() breaks when whole is 0"
+devai fix --file src/stats.py --ask "..." --dry-run    # see what would be sent
+```
+
+- **You choose which files may change** (`--file`, 1 to 3, with the same checks as in `chat`). They are sent **whole**, so the AI can copy the exact text it replaces. Lines that may hold a secret are still redacted, and the request too.
+- **Edits are "find and replace"**: each one names a file, the exact current text and its replacement. DevAI rejects the **whole** proposal, with the reason, if any edit:
+  - changes a file you didn't name;
+  - uses text that isn't found exactly once (zero or several matches);
+  - touches a redacted line or would write the redaction marker;
+  - would add a secret;
+  - would leave a `.py` file with invalid syntax or a `.json` file with invalid JSON;
+  - or adds up to too much (over 10 edits or 200 changed lines).
+- A valid proposal is applied **in memory only**, to build the diff. The output also lists risks and how to verify the fix. A rejected proposal exits with code `3`.
+- Consent, providers and options work as in `chat` (`--yes`, `--provider`, `--format json`).
+
 ### AI analysis
 
 `devai analyze --ai` adds an AI analysis: a summary, risks, prioritized recommendations, and the limits of what it could judge. **It is always free.** There are two providers:
@@ -317,6 +337,11 @@ src/devai/
 │   ├── ai.py              # the chat task: prompt, consent question, grounding
 │   ├── schema.py          # ChatAnswer: answer, sources, suggested files
 │   └── session.py         # the conversation: approval, /commands, history
+├── fix/              # `devai fix`: proposals validated and shown as a diff
+│   ├── context.py         # what a fix may receive: named files, whole, redacted
+│   ├── ai.py              # the fix task: prompt, consent question
+│   ├── schema.py          # FixProposal: find-and-replace edits, risks, tests
+│   └── edits.py           # validation and the in-memory diff (never writes)
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
@@ -345,7 +370,8 @@ tests/
 | 4c | AI Review | Free AI review of the changed code (OpenCode free models or Ollama), consent listing the files |
 | 5a | Chat Context | Local file selection with reasons, `--file`, numbered and redacted lines; `chat --ask ... --dry-run`, no network |
 | 5b | Contextual Chat | Interactive `devai chat`: approve files per question, AI can suggest files, history kept locally |
-| 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |
+| 6a | Fix Proposals | `devai fix`: find-and-replace edits, strict validation, diff; nothing is written |
+| 6b | Applying Fixes | `devai fix --apply`: diff first, explicit approval, clean-git and unchanged-file checks, atomic write; never commits |
 | 7 | Test Generation | `devai test` |
 | 8 | Documentation | `devai docs` |
 | 9 | Web Interface | FastAPI + React, Docker |

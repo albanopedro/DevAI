@@ -11,9 +11,12 @@ from devai.ai import build_context, estimate_tokens, serialize_context
 from devai.ai.result import AIError, AIRequest, AIResult, LLMClient
 from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
+from devai.analyzer.files import list_project_files
 from devai.chat import ChatError, Selection, build_chat_context, select_files
+from devai.chat.retrieval import extra_file
 from devai.checks import run_checks
-from devai.json_report import chat_to_json, review_to_json, to_json
+from devai.fix.context import MAX_FIX_FILES, build_fix_context
+from devai.json_report import chat_to_json, fix_to_json, review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
 from devai.report import (
     SEPARATOR,
@@ -21,6 +24,8 @@ from devai.report import (
     format_ai_section,
     format_chat_answer,
     format_chat_header,
+    format_fix_header,
+    format_fix_proposal,
     format_report,
     format_review,
     plural,
@@ -45,11 +50,13 @@ FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 
 # Shown on stderr while the model works, per AI task.
 PROGRESS = {
+    "fix": "Asking {model} for a fix…",
     "analysis": "Analyzing with {model}…",
     "review": "Reviewing with {model}…",
     "chat": "Asking {model}…",
 }
 LOCAL_PROGRESS = {
+    "fix": "Asking {model} for a fix locally (nothing leaves this machine)…",
     "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
     "review": "Reviewing locally with {model} (nothing leaves this machine)…",
     "chat": "Asking {model} locally (nothing leaves this machine)…",
@@ -154,6 +161,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(chat)
 
+    fix = subparsers.add_parser(
+        "fix",
+        help="ask a free AI to propose a fix, shown as a diff (nothing is written)",
+    )
+    fix.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="project directory (default: current directory)",
+    )
+    fix.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        required=True,
+        metavar="PATH",
+        help="a file the fix may change (1 to 3; repeat the option)",
+    )
+    fix.add_argument(
+        "--ask", required=True, metavar="REQUEST", help="what to fix or change"
+    )
+    fix.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+    fix.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show exactly what would be sent, without sending it",
+    )
+    add_ai_send_options(fix)
+
     return parser
 
 
@@ -200,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "chat":
         return run_chat(args)
+    if args.command == "fix":
+        return run_fix(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -414,6 +457,68 @@ def ask_ai(
         result.report, context, root
     )
     return replace(result, report=answer), (dropped_sources, dropped_suggestions), False
+
+
+def run_fix(args: argparse.Namespace) -> int:
+    """Propose a fix and show it as a diff. Never writes to the project (D043)."""
+    if len(args.file) > MAX_FIX_FILES:
+        print_error(f"a fix may change at most {MAX_FIX_FILES} files (--file)")
+        return EXIT_USAGE
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    allowed = list_project_files(info.path).files
+    try:
+        files = [
+            extra_file(info.path, name, allowed, "named with --file")
+            for name in args.file
+        ]
+    except ChatError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    context = build_fix_context(args.ask, info, run_checks(info), files)
+    if args.dry_run:
+        print(format_fix_preview(context, args.format))
+        return EXIT_OK
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.fix.ai import fix_question, fix_request  # needs the [ai] extra
+        from devai.fix.edits import FixError, apply_edits
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "text":
+        print(format_fix_header(info.name, context), flush=True)
+    result, failed = run_ai(
+        client,
+        settings,
+        fix_request(context),
+        fix_question(context, settings),
+        args.yes,
+        task="fix",
+    )
+    changes, rejected = [], None
+    if result is not None:
+        try:
+            changes = apply_edits(result.report, {f.path: f.text for f in files})
+        except FixError as problem:
+            rejected = str(problem)
+            print_error(
+                f"The proposed fix was rejected: {rejected}. Nothing was changed."
+            )
+
+    if args.format == "json":
+        print(fix_to_json(info.name, context, result, changes, rejected))
+    elif result is not None and rejected is None:
+        print()
+        print(format_fix_proposal(result, changes))
+    return EXIT_AI_ERROR if failed or rejected else EXIT_OK
 
 
 def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:
@@ -632,6 +737,27 @@ def format_chat_preview(context: dict, selection: Selection, output_format: str)
             "Add files with --file."
         )
     lines += [
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def format_fix_preview(context: dict, output_format: str) -> str:
+    """Show what a fix request would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+    compact = serialize_context(context)
+    lines = [
+        "AI FIX CONTEXT PREVIEW (dry run: nothing was sent, nothing was changed)",
+        SEPARATOR,
+        f"Request: {printable(context['request'])}",
+        "Files that would be sent in full:",
+        *(f"  {printable(file['path'])}" for file in context["files"]),
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),
         SEPARATOR,

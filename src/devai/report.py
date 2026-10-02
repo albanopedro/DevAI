@@ -372,3 +372,48 @@ def format_chat_answer(
         "Written by AI from the files listed above, not the whole project.",
     ]
     return "\n".join(lines)
+
+
+def format_fix_header(name: str, context: dict) -> str:
+    lines = [
+        "DEVAI FIX",
+        SEPARATOR,
+        f"Project: {printable(name)}",
+        f"Request: {printable(context['request'])}",
+        "Files the fix may change:",
+        *(f"  {printable(file['path'])}" for file in context["files"]),
+    ]
+    return "\n".join(lines)
+
+
+def format_fix_proposal(result: AIResult, changes: list) -> str:
+    """Render a validated proposal and its diff. Model output: untrusted."""
+    proposal = result.report
+    lines = [f"PROPOSED FIX ({printable(result.model)})", SEPARATOR, "Summary:"]
+    lines += wrap(proposal.summary, "  ")
+
+    lines += ["", "Changes:"]
+    if changes:
+        for change in changes:
+            # The diff keeps its own lines; only control characters are removed.
+            lines += [printable(line) for line in change.diff.rstrip("\n").split("\n")]
+    else:
+        lines.append("  none: the AI proposed no change")
+
+    lines += ["", "Risks:"]
+    lines += [line for risk in proposal.risks for line in wrap(risk, "  - ", "    ")]
+    if not proposal.risks:
+        lines.append("  none listed")
+    lines += ["", "How to verify:"]
+    lines += [line for test in proposal.tests for line in wrap(test, "  - ", "    ")]
+    if not proposal.tests:
+        lines.append("  none listed")
+
+    usage = result.usage
+    lines += [
+        "",
+        "Nothing was changed. Applying a fix comes in Phase 6b.",
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI. Review the diff before applying anything.",
+    ]
+    return "\n".join(lines)
