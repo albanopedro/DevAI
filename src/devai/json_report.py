@@ -127,3 +127,28 @@ def coverage_to_json(name: str, coverage) -> str:
         },
     }
     return json.dumps(document, indent=2, ensure_ascii=False)
+
+
+def generated_tests_to_json(
+    name: str, context: dict, ai: AIResult | None, path, rejected: str | None
+) -> str:
+    """A test proposal as JSON (nothing created)."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "tests": {
+            "project": name,
+            "source": context["source"]["path"],
+            "existing_tests": [test["path"] for test in context["existing_tests"]],
+            "created": False,
+        },
+    }
+    if ai is not None:
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "proposal": ai.report.model_dump(mode="json"),
+            "path": str(path) if path else None,
+            "rejected": rejected,
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)

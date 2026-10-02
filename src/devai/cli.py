@@ -13,13 +13,15 @@ from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_setting
 from devai.analyzer import analyze_project
 from devai.analyzer.files import list_project_files
 from devai.chat import ChatError, Selection, build_chat_context, select_files
-from devai.chat.retrieval import extra_file
+from devai.chat.retrieval import SelectedFile, extra_file
 from devai.checks import run_checks
+from devai.checks.secrets import read_scannable_text
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
 from devai.json_report import (
     chat_to_json,
     coverage_to_json,
     fix_to_json,
+    generated_tests_to_json,
     review_to_json,
     to_json,
 )
@@ -34,8 +36,11 @@ from devai.report import (
     format_fix_applied,
     format_fix_header,
     format_fix_proposal,
+    format_generated_tests,
     format_report,
     format_review,
+    format_testgen_header,
+    format_tests_created,
     plural,
     printable,
 )
@@ -47,7 +52,10 @@ from devai.review import (
     run_review_checks,
 )
 from devai.review.context import build_review_context
+from devai.testgen.context import build_testgen_context
+from devai.testgen.create import run_command
 from devai.testmap import build_coverage_map
+from devai.testmap.pairing import covers, source_files, test_files
 
 # Same convention as linters such as ruff and eslint (D022).
 EXIT_OK = 0
@@ -59,12 +67,14 @@ FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 
 # Shown on stderr while the model works, per AI task.
 PROGRESS = {
+    "tests": "Asking {model} for tests…",
     "fix": "Asking {model} for a fix…",
     "analysis": "Analyzing with {model}…",
     "review": "Reviewing with {model}…",
     "chat": "Asking {model}…",
 }
 LOCAL_PROGRESS = {
+    "tests": "Asking {model} for tests locally (nothing leaves this machine)…",
     "fix": "Asking {model} for a fix locally (nothing leaves this machine)…",
     "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
     "review": "Reviewing locally with {model} (nothing leaves this machine)…",
@@ -212,7 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_ai_send_options(fix)
 
     test = subparsers.add_parser(
-        "test", help="estimate where tests are missing (local, from names)"
+        "test",
+        help="estimate where tests are missing; with --file and --ai, propose tests",
     )
     test.add_argument(
         "path",
@@ -226,6 +237,25 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="output format (default: text)",
     )
+    test.add_argument(
+        "--file", metavar="PATH", help="with --ai: the source file to write tests for"
+    )
+    test.add_argument(
+        "--ai",
+        action="store_true",
+        help="ask a free AI for a new test file (shown first; nothing is run)",
+    )
+    test.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --ai: show exactly what would be sent, without sending it",
+    )
+    test.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --ai: create the file after you approve (needs a terminal)",
+    )
+    add_ai_send_options(test)
 
     return parser
 
@@ -607,6 +637,12 @@ def apply_fix(root: Path, changes: list, tests: list[str]) -> int:
 
 def run_test(args: argparse.Namespace) -> int:
     """Where tests seem to be missing. A map, not a check: always exit 0 (D045)."""
+    for option in ("dry_run", "apply", "yes", "provider", "file"):
+        if getattr(args, option) and not args.ai:
+            print_error(f"--{option.replace('_', '-')} requires --ai")
+            return EXIT_USAGE
+    if args.ai:
+        return run_test_generation(args)
     path = Path(args.path)
     try:
         info = analyze_project(path)
@@ -618,6 +654,115 @@ def run_test(args: argparse.Namespace) -> int:
         print(coverage_to_json(info.name, coverage))
     else:
         print(format_coverage_map(info.name, coverage))
+    return EXIT_OK
+
+
+def run_test_generation(args: argparse.Namespace) -> int:
+    """Propose a new test file; create it only with --apply and a typed "y" (D046)."""
+    if not args.file:
+        print_error("--ai needs the source file to test: --file PATH")
+        return EXIT_USAGE
+    if args.apply and (args.dry_run or args.format == "json"):
+        print_error("--apply can't be combined with --dry-run or --format json")
+        return EXIT_USAGE
+    if args.apply and not is_interactive():
+        print_error("--apply needs a terminal: you approve every new file yourself")
+        return EXIT_USAGE
+
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    try:
+        source = extra_file(info.path, args.file, info.files, "named with --file")
+    except ChatError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+    if source.path not in source_files([source.path]):
+        print_error(
+            f"{source.path}: tests can be written for Python, JavaScript or "
+            "TypeScript source files"
+        )
+        return EXIT_USAGE
+
+    existing = []
+    for test_path in test_files(info.files):
+        if covers(test_path, source.path):
+            text = read_scannable_text(info.path / test_path, test_path)
+            if text is not None:
+                existing.append(SelectedFile(test_path, "existing test", text))
+    untested = dict(build_coverage_map(info).untested_symbols).get(source.path, ())
+    context = build_testgen_context(
+        source, existing, list(untested), info, run_checks(info)
+    )
+    if args.dry_run:
+        print(format_testgen_preview(context, args.format))
+        return EXIT_OK
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.testgen.ai import generation_question, generation_request
+        from devai.testgen.validate import TestGenError, validate_generated
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "text":
+        print(format_testgen_header(info.name, context), flush=True)
+    result, failed = run_ai(
+        client,
+        settings,
+        generation_request(context),
+        generation_question(context, settings),
+        args.yes,
+        task="tests",
+    )
+    if failed:
+        return EXIT_AI_ERROR
+    if result is None:
+        return EXIT_OK  # declined: nothing was sent
+    try:
+        new_path = validate_generated(result.report, info.path, source.path)
+    except TestGenError as problem:
+        print_error(
+            f"The proposed tests were rejected: {problem}. Nothing was created."
+        )
+        if args.format == "json":
+            print(
+                generated_tests_to_json(info.name, context, result, None, str(problem))
+            )
+        return EXIT_AI_ERROR
+
+    command = run_command(info.tests.frameworks, new_path)
+    if args.format == "json":
+        print(generated_tests_to_json(info.name, context, result, new_path, None))
+        return EXIT_OK
+    print()
+    print(
+        format_generated_tests(result, new_path, command, applying=args.apply),
+        flush=True,
+    )
+    if args.apply:
+        return create_tests(info.path, new_path, result.report.content, command)
+    return EXIT_OK
+
+
+def create_tests(root: Path, path, content: str, command: str) -> int:
+    """Ask, then create the file exclusively (D047)."""
+    from devai.testgen.create import CreateError, create_test_file, undo_command
+
+    print(f"\nCreate {path}? [y/N] ", end="", file=sys.stderr, flush=True)
+    if sys.stdin.readline().strip().lower() not in {"y", "yes"}:
+        print("Not created. Nothing was changed.")
+        return EXIT_OK
+    try:
+        created = create_test_file(root, path, content)
+    except CreateError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+    print(format_tests_created(path, undo_command(path, created), command))
     return EXIT_OK
 
 
@@ -858,6 +1003,28 @@ def format_fix_preview(context: dict, output_format: str) -> str:
         f"Request: {printable(context['request'])}",
         "Files that would be sent in full:",
         *(f"  {printable(file['path'])}" for file in context["files"]),
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def format_testgen_preview(context: dict, output_format: str) -> str:
+    """Show what a test request would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+    compact = serialize_context(context)
+    existing = [test["path"] for test in context["existing_tests"]]
+    lines = [
+        "AI TESTS CONTEXT PREVIEW (dry run: nothing was sent, nothing was created)",
+        SEPARATOR,
+        f"Source:          {printable(context['source']['path'])}",
+        f"Existing tests:  {printable(', '.join(existing)) or 'none'}",
+        f"Untested names:  {printable(', '.join(context['untested_names'])) or 'none'}",
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),
         SEPARATOR,

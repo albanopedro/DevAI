@@ -10,6 +10,7 @@ from conftest import (
     fake_ai_report,
     fake_chat_answer,
     fake_fix_proposal,
+    fake_generated_tests,
     fake_review_report,
     git_commit,
     git_run,
@@ -1351,3 +1352,155 @@ def test_test_map_runs_nothing(map_project, capsys, monkeypatch):
     monkeypatch.setattr(subprocess_module, "run", only_git)
 
     assert main(["test", str(map_project)]) == EXIT_OK
+
+
+# --- test --ai (Phase 7b): proposals, created only after "y", never run ---------------
+
+
+@pytest.fixture
+def testgen_repo(git_repo):
+    write(git_repo, "stats.py", STATS_PY)
+    write(git_repo, "tests/test_stats.py", "def test_ok():\n    assert True\n")
+    git_commit(git_repo, "fixture")
+    return git_repo
+
+
+@pytest.fixture
+def fake_tests_ai(fake_ai):
+    fake_ai.result = AIResult(fake_generated_tests(), "fake-model", AIUsage(90, 99))
+    return fake_ai
+
+
+def generate(repo, *extra):
+    return main(["test", str(repo), "--file", "stats.py", "--ai", "--yes", *extra])
+
+
+def test_proposal_is_shown_and_nothing_is_created(testgen_repo, capsys, fake_tests_ai):
+    before = snapshot(testgen_repo)
+
+    assert generate(testgen_repo) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "Existing tests: tests/test_stats.py" in out
+    assert "New file: tests/test_stats_edge_cases.py" in out
+    assert "def test_percent_of_zero_whole_raises():" in out
+    assert "Run them yourself with: pytest tests/test_stats_edge_cases.py" in out
+    assert "Nothing was created." in out
+    assert snapshot(testgen_repo) == before
+
+
+def test_tests_sends_the_same_context_as_the_dry_run(
+    testgen_repo, capsys, fake_tests_ai
+):
+    main(
+        [
+            "test",
+            str(testgen_repo),
+            "--file",
+            "stats.py",
+            "--ai",
+            "--dry-run",
+            "--format",
+            "json",
+        ]
+    )
+    previewed = json.loads(capsys.readouterr().out)
+
+    generate(testgen_repo)
+
+    assert fake_tests_ai.contexts == [previewed]
+
+
+def test_apply_creates_the_file_after_yes(
+    testgen_repo, capsys, fake_tests_ai, monkeypatch
+):
+    before_git = git_state(testgen_repo)
+    answer(monkeypatch, "y\n")
+
+    assert generate(testgen_repo, "--apply") == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "Create tests/test_stats_edge_cases.py? [y/N]" in captured.err
+    assert "Undo with: rm tests/test_stats_edge_cases.py" in captured.out
+    assert "Nothing was committed." in captured.out
+    created = testgen_repo / "tests/test_stats_edge_cases.py"
+    assert created.read_text() == fake_generated_tests().content
+    assert git_state(testgen_repo) == before_git
+
+
+def test_apply_without_yes_creates_nothing(
+    testgen_repo, capsys, fake_tests_ai, monkeypatch
+):
+    before = snapshot(testgen_repo)
+    answer(monkeypatch, "n\n")
+
+    assert generate(testgen_repo, "--apply") == EXIT_OK
+
+    assert "Not created. Nothing was changed." in capsys.readouterr().out
+    assert snapshot(testgen_repo) == before
+
+
+def test_apply_needs_a_terminal(testgen_repo, capsys, fake_tests_ai):
+    assert generate(testgen_repo, "--apply") == EXIT_USAGE
+    assert fake_tests_ai.requests == []
+
+
+def test_rejected_proposal_creates_nothing(testgen_repo, capsys, fake_tests_ai):
+    fake_tests_ai.result = AIResult(
+        fake_generated_tests(path="tests/test_stats.py"), "fake-model", AIUsage(1, 1)
+    )
+    before = snapshot(testgen_repo)
+
+    assert generate(testgen_repo) == EXIT_AI_ERROR
+
+    assert "already exists; DevAI never overwrites" in capsys.readouterr().err
+    assert snapshot(testgen_repo) == before
+
+
+def test_consent_lists_the_files(testgen_repo, capsys, fake_tests_ai, monkeypatch):
+    answer(monkeypatch, "\n")
+
+    main(["test", str(testgen_repo), "--file", "stats.py", "--ai"])
+
+    err = capsys.readouterr().err
+    assert "Files: stats.py, tests/test_stats.py." in err
+    assert fake_tests_ai.requests == []
+
+
+def test_generated_tests_are_never_run(
+    testgen_repo, capsys, fake_tests_ai, monkeypatch
+):
+    import subprocess as subprocess_module
+
+    real_run = subprocess_module.run
+
+    def only_git(command, *args, **kwargs):
+        assert command[0] == "git", f"unexpected command: {command}"
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess_module, "run", only_git)
+    answer(monkeypatch, "y\n")
+
+    assert generate(testgen_repo, "--apply") == EXIT_OK
+
+
+def test_options_need_ai(testgen_repo, capsys):
+    assert main(["test", str(testgen_repo), "--file", "stats.py"]) == EXIT_USAGE
+    assert "--file requires --ai" in capsys.readouterr().err
+
+
+def test_ai_needs_a_supported_source_file(testgen_repo, capsys, fake_tests_ai):
+    write(testgen_repo, "README.md", "docs\n")
+
+    args = ["test", str(testgen_repo), "--file", "README.md", "--ai", "--yes"]
+    assert main(args) == EXIT_USAGE
+    assert "Python, JavaScript or TypeScript" in capsys.readouterr().err
+
+
+def test_tests_json(testgen_repo, capsys, fake_tests_ai):
+    generate(testgen_repo, "--format", "json")
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["tests"]["created"] is False
+    assert document["ai"]["path"] == "tests/test_stats_edge_cases.py"
+    assert document["ai"]["rejected"] is None

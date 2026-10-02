@@ -87,3 +87,24 @@ def has_pending_changes(path: Path, file: str) -> bool:
         path, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--", file
     )
     return bool(output.strip("\0"))
+
+
+def is_ignored(path: Path, file: str) -> bool:
+    """True if git would ignore `file` (it doesn't need to exist yet).
+
+    check-ignore exits 0 (ignored), 1 (not ignored) or higher (error). An error
+    raises GitError instead of being read as "not ignored": callers fail closed.
+    It takes plain paths; pathspec magic like --literal-pathspecs is an error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "check-ignore", "-q", "--", file],
+            capture_output=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+        )
+    except FileNotFoundError as error:
+        raise GitError("git is not installed") from error
+    if result.returncode in (0, 1):
+        return result.returncode == 0
+    raise GitError(result.stderr.strip() or "git check-ignore failed")

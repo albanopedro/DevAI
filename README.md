@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 7a: finding missing tests).
+> **Status:** early development (Phase 7b: AI-generated tests).
 
 ## Goal
 
@@ -238,6 +238,20 @@ devai test --format json   # for scripts
 - **It's an estimate, and it says so.** Code tested indirectly, through other functions or the CLI, looks untested here. DevAI's own report shows this: its report formatters are tested through the CLI output, and they still appear in the list. Use it to choose where to look, not as a coverage number. (For real coverage, use a tool like `coverage.py` that runs your tests.)
 - Always exits `0`: it is a map. The `no-tests` finding of `devai analyze` stays the CI check.
 
+#### Writing tests with AI (`--file ... --ai`)
+
+```bash
+devai test --file src/stats.py --ai            # propose a new test file
+devai test --file src/stats.py --ai --apply    # create it, after your "y"
+devai test --file src/stats.py --ai --dry-run  # see what would be sent
+```
+
+- **What is sent:** the source file and up to 2 test files that already cover it (so the AI copies their style and imports), whole and with secrets redacted, plus the detected test framework and the names no test mentions yet.
+- **Only new files.** To extend an existing test file, use `devai fix --file tests/test_stats.py --ask "add tests for percent"`.
+- **The proposal is rejected whole** if the new path is outside the project, already exists, or is ignored by `.gitignore`; if its **name** wouldn't be found by a test runner (`test_*.py`, `*_test.py`, `*.test.js`, `*.spec.ts`, or a `__tests__` folder) or doesn't contain the source file's name; if it's in another language; or if the content is empty, over 300 lines, holds a secret or a redacted line, or isn't valid Python.
+- **`--apply` creates the file after you type `y`, and never overwrites.** The file is created exclusively, so even one that appears at the last moment is kept. Missing folders (like `tests/`) are created and included in the undo command, e.g. `Undo with: rm tests/test_stats.py && rmdir tests`.
+- **DevAI never runs the generated tests.** It prints a run command it builds itself from your test framework (`pytest …`, `npx jest …`, `npx vitest run …`), never one copied from the AI. Tests are code: review them before you run them.
+
 ### Proposing fixes
 
 `devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
@@ -373,6 +387,12 @@ src/devai/
 ├── testmap/          # `devai test`: where tests seem to be missing
 │   ├── pairing.py         # source ↔ test files by name words
 │   └── symbols.py         # public Python names no test mentions
+├── testgen/          # `devai test --ai`: new test files proposed by AI
+│   ├── context.py         # what it may receive: the source and its existing tests
+│   ├── ai.py              # the task: prompt, consent question
+│   ├── schema.py          # GeneratedTests: path, content, covers, notes
+│   ├── validate.py        # path, name, language and content rules
+│   └── create.py          # exclusive creation, undo and run commands
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
@@ -404,7 +424,7 @@ tests/
 | 6a | Fix Proposals | `devai fix`: find-and-replace edits, strict validation, diff; nothing is written |
 | 6b | Applying Fixes | `devai fix --apply`: diff first, explicit approval, clean-git and unchanged-file checks, atomic write; never commits |
 | 7a | Missing Tests | `devai test`: source files without a matching test, Python names no test mentions; an estimate, nothing executed |
-| 7b | Test Generation | `devai test --file X --ai`: AI-proposed tests, validated like fixes, created only after your "y"; never run by DevAI |
+| 7b | Test Generation | `devai test --file X --ai`: a new test file, validated, created only after your "y", never overwriting, never run by DevAI |
 | 8 | Documentation | `devai docs` |
 | 9 | Web Interface | FastAPI + React, Docker |
 | 10 | GitHub Integration | Repositories, pull requests, issues |

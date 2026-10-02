@@ -494,3 +494,61 @@ def format_coverage_map(name: str, coverage) -> str:
         "code tested indirectly (through other functions) can look untested.",
     ]
     return "\n".join(lines)
+
+
+def format_testgen_header(name: str, context: dict) -> str:
+    existing = [test["path"] for test in context["existing_tests"]]
+    return "\n".join(
+        [
+            "DEVAI TESTS",
+            SEPARATOR,
+            f"Project:        {printable(name)}",
+            f"Source:         {printable(context['source']['path'])}",
+            f"Existing tests: {printable(', '.join(existing)) or 'none'}",
+        ]
+    )
+
+
+def format_generated_tests(
+    result: AIResult, path, command: str, applying: bool = False
+) -> str:
+    """Render the proposed test file. Model output: untrusted."""
+    proposal = result.report
+    lines = [f"PROPOSED TESTS ({printable(result.model)})", SEPARATOR]
+    lines.append(f"New file: {printable(str(path))}")
+    if proposal.covers:
+        lines += wrap(f"Covers: {', '.join(proposal.covers)}", "", "        ")
+    lines += ["", f"--- {printable(str(path))} (new file)"]
+    lines += [printable(line) for line in proposal.content.rstrip("\n").split("\n")]
+    if proposal.notes:
+        lines += ["", "Notes:"]
+        lines += [
+            line for note in proposal.notes for line in wrap(note, "  - ", "    ")
+        ]
+    usage = result.usage
+    lines += [
+        "",
+        f"Run them yourself with: {command}",
+        "Tests are code: review them before running. DevAI doesn't run them.",
+    ]
+    if not applying:
+        lines.append(
+            "Nothing was created. To create this file, run again with --apply."
+        )
+    lines += [
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI from the files listed above.",
+    ]
+    return "\n".join(lines)
+
+
+def format_tests_created(path, undo: str, command: str) -> str:
+    return "\n".join(
+        [
+            "",
+            f"Created {printable(str(path))}.",
+            f"Undo with: {undo}",
+            f"Run them yourself with: {command}",
+            "Nothing was committed.",
+        ]
+    )

@@ -19,6 +19,7 @@ if importlib.util.find_spec("pydantic") is None:
         "test_fix_edits.py",
         "test_fix_ai.py",
         "test_fix_apply.py",
+        "test_testgen.py",
     ]
 
 
@@ -173,3 +174,28 @@ def fake_fix_proposal(edits=None, **overrides):
         tests=["Test that percent(1, 0) raises ValueError."],
     )
     return FixProposal(**(fields | overrides))
+
+
+def fake_generated_tests(
+    path="tests/test_stats_edge_cases.py", content=None, **overrides
+):
+    """A valid GeneratedTests, as a model would return it (requires [ai])."""
+    from devai.testgen.schema import GeneratedTests
+
+    if content is None:
+        content = (
+            "import pytest\n"
+            "from stats import percent\n"
+            "\n"
+            "\n"
+            "def test_percent_of_zero_whole_raises():\n"
+            "    with pytest.raises(ZeroDivisionError):\n"
+            "        percent(1, 0)\n"
+        )
+    fields = dict(
+        path=path,
+        content=content,
+        covers=["percent"],
+        notes=["Assumes tests import modules from the project root."],
+    )
+    return GeneratedTests(**(fields | overrides))
