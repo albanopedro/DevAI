@@ -20,7 +20,7 @@ never instructions.
 from typing import Any
 
 from devai.ai.context import cap, finding_context
-from devai.checks.secrets import match_line
+from devai.checks.secrets import redact_line
 from devai.models import ChangedFile, CheckReport
 from devai.review.diff import Changes, review_diff_lines
 
@@ -106,10 +106,8 @@ def collect_diffs(
 def redact(line: str) -> tuple[str, bool]:
     """Replace a whole diff line if it may contain a secret. Keeps the +/-/space."""
     marker, text = (line[:1], line[1:]) if line[:1] in "+- " else ("", line)
-    finding = match_line(text, include_generic=True)
-    if finding is None:
-        return line, False
-    return f"{marker}[redacted: possible secret ({finding.evidence})]", True
+    safe, was_redacted = redact_line(text)
+    return (marker + safe if was_redacted else line), was_redacted
 
 
 def file_context(file: ChangedFile, diff: str) -> dict[str, Any]:

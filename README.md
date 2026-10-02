@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 4c: AI review).
+> **Status:** early development (Phase 5a: chat context).
 
 ## Goal
 
@@ -201,6 +201,20 @@ What would be sent:
 - Limits: 20 files with hunks, 200 lines per file, about 20,000 characters in total. Every changed file stays listed with the reason its code isn't included (`deleted`, `not read (privacy or size rules)`, `not included (size limit)`), and cuts are recorded under `truncated`.
 - Code comes from the reviewed project and is untrusted: a comment saying "ignore your instructions" is data. `<` is escaped, so nothing in the code can close the prompt's delimiter.
 
+### Asking about a project (chat)
+
+`devai chat` will answer questions about a project with the relevant files as context. It is being built in two steps. **Phase 5a** (current) picks the files and shows exactly what would be sent, with no AI and no network access:
+
+```bash
+devai chat --ask "why does /users return 500?" --dry-run
+devai chat --ask "how is the cart saved?" --file src/cart.js --dry-run   # add a file yourself
+```
+
+- **Files are picked locally, with a reason.** The question's terms (stopwords removed, in Portuguese and English) are matched against each file's path (worth more) and content (capped). The best 5 are shown with what they matched, e.g. `api/users.py  matches: users, get, 500`. No AI decides what to read.
+- **`--file` gets the same checks** as everything else: it must be inside the project, not a symlink, not ignored by `.gitignore`, and not an environment, lock, minified, binary or large file.
+- **What would be sent:** the question, the project summary (as in "What is sent" above), and the chosen files with **numbered lines**, so an answer can cite `path:line`. Every line that may hold a secret is replaced, in the files and in the question. Limits: 5 files, 300 lines each, about 30,000 characters of file content.
+- **Phase 5b** will turn this into a conversation: you approve the files before each question, and the AI can only *suggest* more files for you to approve.
+
 ### AI analysis
 
 `devai analyze --ai` adds an AI analysis: a summary, risks, prioritized recommendations, and the limits of what it could judge. **It is always free.** There are two providers:
@@ -288,6 +302,9 @@ src/devai/
     ├── runner.py          # runs every check, sorts findings
     ├── project_checks.py  # README, .gitignore, tests, exposed .env
     └── secrets.py         # secret patterns, file skipping, masking
+├── chat/             # `devai chat`: file selection and the chat context
+│   ├── retrieval.py       # local keyword search, --file checks
+│   └── context.py         # what a chat answer may receive: numbered lines, redaction
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
@@ -314,7 +331,8 @@ tests/
 | 4a | Local Review | `devai review`: secrets, `.env`, tests, debug leftovers and size in the current git changes; no AI |
 | 4b | AI Review Context | Allow-listed hunks with secrets redacted and size limits; `review --ai --dry-run`, no network |
 | 4c | AI Review | Free AI review of the changed code (OpenCode free models or Ollama), consent listing the files |
-| 5 | Contextual Chat | `devai chat` |
+| 5a | Chat Context | Local file selection with reasons, `--file`, numbered and redacted lines; `chat --ask ... --dry-run`, no network |
+| 5b | Contextual Chat | Interactive `devai chat`: approve files per question, AI can suggest files, history kept locally |
 | 6 | Fix Suggestions | `devai fix`: proposed diff, manual approval |
 | 7 | Test Generation | `devai test` |
 | 8 | Documentation | `devai docs` |

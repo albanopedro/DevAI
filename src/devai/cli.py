@@ -11,6 +11,7 @@ from devai.ai import build_context, estimate_tokens, serialize_context
 from devai.ai.result import AIError, AIRequest, AIResult, LLMClient
 from devai.ai.settings import PROVIDERS, AISettings, SettingsError, load_settings
 from devai.analyzer import analyze_project
+from devai.chat import ChatError, Selection, build_chat_context, select_files
 from devai.checks import run_checks
 from devai.json_report import review_to_json, to_json
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
@@ -20,6 +21,7 @@ from devai.report import (
     format_ai_section,
     format_report,
     format_review,
+    plural,
     printable,
 )
 from devai.review import (
@@ -104,6 +106,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(review)
 
+    chat = subparsers.add_parser(
+        "chat", help="ask about a project (Phase 5a: preview with --dry-run)"
+    )
+    chat.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="project directory (default: current directory)",
+    )
+    chat.add_argument("--ask", metavar="QUESTION", help="the question to ask")
+    chat.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="also send this project file (relative to the project); repeatable",
+    )
+    chat.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+    chat.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show exactly what would be sent, without sending it",
+    )
+
     return parser
 
 
@@ -148,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "chat":
+        return run_chat(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -254,6 +287,37 @@ def run_review(args: argparse.Namespace) -> int:
     return (
         EXIT_FINDINGS if should_fail(report.checks.findings, args.fail_on) else EXIT_OK
     )
+
+
+def run_chat(args: argparse.Namespace) -> int:
+    if not args.ask:
+        print_error(
+            'chat needs a question for now: devai chat --ask "..." --dry-run '
+            "(the interactive chat comes in Phase 5b)."
+        )
+        return EXIT_USAGE
+    if not args.dry_run:
+        print_error(
+            "Answering questions comes in Phase 5b. "
+            "Use --dry-run to preview what would be sent."
+        )
+        return EXIT_USAGE
+
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    try:
+        selection = select_files(info.path, args.ask, tuple(args.file))
+    except ChatError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    context = build_chat_context(args.ask, info, run_checks(info), selection)
+    print(format_chat_preview(context, selection, args.format))
+    return EXIT_OK
 
 
 def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:
@@ -437,6 +501,43 @@ def format_review_ai_preview(
         width = max(len(printable(path)) for path, _ in not_sent)
         lines.append("Not sent:")
         lines += [f"  {printable(path):<{width}}  {why}" for path, why in not_sent]
+    lines += [
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def format_chat_preview(context: dict, selection: Selection, output_format: str) -> str:
+    """Show what a chat question would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+
+    compact = serialize_context(context)
+    terms = ", ".join(selection.terms) or "none"
+    lines = [
+        "AI CHAT CONTEXT PREVIEW (dry run: nothing was sent)",
+        SEPARATOR,
+        f"Question:     {printable(context['question'])}",
+        f"Search terms: {printable(terms)}",
+    ]
+    if context["files"]:
+        width = max(len(printable(file["path"])) for file in context["files"])
+        lines.append("Files that would be sent:")
+        lines += [
+            f"  {printable(file['path']):<{width}}  {printable(file['reason'])}"
+            f"  ({len(file['lines'])} {plural(len(file['lines']), 'line')})"
+            for file in context["files"]
+        ]
+    else:
+        lines.append(
+            "No relevant files found: only the project summary would be sent. "
+            "Add files with --file."
+        )
     lines += [
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),

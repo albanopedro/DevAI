@@ -815,3 +815,67 @@ def test_review_yes_requires_ai(repo, capsys):
         main(["review", str(repo), "--yes"])
 
     assert exit_info.value.code == EXIT_USAGE
+
+
+# --- chat (Phase 5a: dry run only) ------------------------------------------------
+
+
+@pytest.fixture
+def chat_project(tmp_path):
+    write(tmp_path, "api/users.py", "def get_user():\n    raise Error(500)\n")
+    write(tmp_path, "README.md", "users api\n")
+    return tmp_path
+
+
+def test_chat_dry_run_shows_the_files_and_why(chat_project, capsys):
+    args = ["chat", str(chat_project), "--ask", "why do users get 500?", "--dry-run"]
+
+    assert main(args) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert out.startswith("AI CHAT CONTEXT PREVIEW (dry run: nothing was sent)\n")
+    assert "Search terms: users, get, 500\n" in out  # "get" matters in code
+    assert "  api/users.py  matches: users, get, 500  (2 lines)\n" in out
+    assert "  README.md     matches: users  (1 line)\n" in out
+
+
+def test_chat_dry_run_json(chat_project, capsys):
+    main(["chat", str(chat_project), "--ask", "users", "--dry-run", "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["chat_context_version"] == 1
+    assert document["files"][0]["path"] == "api/users.py"
+
+
+def test_chat_with_no_matches_sends_only_the_summary(chat_project, capsys):
+    main(["chat", str(chat_project), "--ask", "why?", "--dry-run"])
+
+    assert "only the project summary would be sent" in capsys.readouterr().out
+
+
+def test_chat_file_outside_the_project_is_refused(chat_project, capsys):
+    args = ["chat", str(chat_project), "--ask", "q", "--dry-run", "--file", "../x.py"]
+
+    assert main(args) == EXIT_USAGE
+    assert "outside the project" in capsys.readouterr().err
+
+
+def test_chat_without_dry_run_is_not_available_yet(chat_project, capsys):
+    assert main(["chat", str(chat_project), "--ask", "q"]) == EXIT_USAGE
+    assert "Phase 5b" in capsys.readouterr().err
+
+
+def test_chat_without_a_question(chat_project, capsys):
+    assert main(["chat", str(chat_project), "--dry-run"]) == EXIT_USAGE
+    assert "needs a question" in capsys.readouterr().err
+
+
+def test_chat_dry_run_makes_no_network_calls(chat_project, capsys, monkeypatch):
+    import socket
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+
+    assert main(["chat", str(chat_project), "--ask", "users", "--dry-run"]) == EXIT_OK

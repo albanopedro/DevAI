@@ -211,3 +211,16 @@ def public_part(match: re.Match[str]) -> str:
     """Evidence that reveals nothing secret: the prefix everyone's token shares."""
     prefix = match.groupdict().get("prefix")
     return f"{prefix}…" if prefix else match.group()
+
+
+def redact_line(text: str) -> tuple[str, bool]:
+    """Replace `text` whole if it may contain a secret, before it leaves the machine.
+
+    Stricter than detection: the generic credential rule applies everywhere,
+    test files included. Hiding a line costs a little context; a sent secret
+    can't be recalled (D036, D039).
+    """
+    finding = match_line(text, include_generic=True)
+    if finding is None:
+        return text, False
+    return f"[redacted: possible secret ({finding.evidence})]", True
