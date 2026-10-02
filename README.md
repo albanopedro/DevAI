@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 6a: fix proposals).
+> **Status:** early development (Phase 6b: applying fixes).
 
 ## Goal
 
@@ -226,11 +226,12 @@ How it works:
 
 ### Proposing fixes
 
-`devai fix` asks a free AI for a fix and shows it as a diff. **In Phase 6a it never writes to your project**: applying a fix, after your approval, comes in Phase 6b.
+`devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
 
 ```bash
 devai fix --file src/stats.py --ask "percent() breaks when whole is 0"
 devai fix --file src/stats.py --ask "..." --dry-run    # see what would be sent
+devai fix --file src/stats.py --ask "..." --apply      # write it, after your "y"
 ```
 
 - **You choose which files may change** (`--file`, 1 to 3, with the same checks as in `chat`). They are sent **whole**, so the AI can copy the exact text it replaces. Lines that may hold a secret are still redacted, and the request too.
@@ -243,6 +244,18 @@ devai fix --file src/stats.py --ask "..." --dry-run    # see what would be sent
   - or adds up to too much (over 10 edits or 200 changed lines).
 - A valid proposal is applied **in memory only**, to build the diff. The output also lists risks and how to verify the fix. A rejected proposal exits with code `3`.
 - Consent, providers and options work as in `chat` (`--yes`, `--provider`, `--format json`).
+
+#### Applying a fix (`--apply`)
+
+DevAI shows the diff, then asks *"Apply this fix to 1 file (src/stats.py)? [y/N]"*. Only `y` writes. Layers of safety, each one able to stop the write:
+
+1. **You approve in a terminal, every time.** `--apply` refuses to run without one, and `--yes` only skips the *send* question, never this one.
+2. **You can always undo.** Each named file must be tracked by git with no pending changes (staged or not), checked *before* the AI is asked. DevAI then prints `Undo with: git restore <file>`.
+3. **No corruption.** Files must be valid UTF-8. Line endings and permissions are kept.
+4. **No overwriting your edits.** Right before writing, each file must still hold exactly the content the fix was proposed for, and still be clean in git.
+5. **All or nothing.** Each file is written to a temporary file and swapped in atomically. If a later file fails, the earlier ones are restored.
+
+DevAI only reads git: it never stages, commits or pushes. The tests the AI suggests are printed, never run. `--apply` can't be combined with `--dry-run` or `--format json`. Exit codes: `0` applied or declined, `2` a safety check stopped it (nothing written), `3` the AI failed, the proposal was rejected, or a write failed (and was rolled back).
 
 ### AI analysis
 
@@ -341,7 +354,8 @@ src/devai/
 │   ├── context.py         # what a fix may receive: named files, whole, redacted
 │   ├── ai.py              # the fix task: prompt, consent question
 │   ├── schema.py          # FixProposal: find-and-replace edits, risks, tests
-│   └── edits.py           # validation and the in-memory diff (never writes)
+│   ├── edits.py           # validation and the in-memory diff
+│   └── apply.py           # --apply: git and content checks, atomic all-or-nothing write
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size

@@ -70,3 +70,20 @@ def empty_tree(path: Path) -> str:
 def merge_base(path: Path, ref: str) -> str:
     """The commit where HEAD's history split from `ref` (as in a pull request)."""
     return run_git(path, "merge-base", ref, "HEAD").strip()
+
+
+def is_tracked(path: Path, file: str) -> bool:
+    """True if git tracks `file` (relative to `path`)."""
+    try:
+        run_git(path, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", file)
+    except GitError:
+        return False
+    return True
+
+
+def has_pending_changes(path: Path, file: str) -> bool:
+    """True if `file` has staged or unstaged changes compared with HEAD."""
+    output = run_git(
+        path, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "--", file
+    )
+    return bool(output.strip("\0"))

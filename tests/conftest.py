@@ -18,6 +18,7 @@ if importlib.util.find_spec("pydantic") is None:
         "test_chat_session.py",
         "test_fix_edits.py",
         "test_fix_ai.py",
+        "test_fix_apply.py",
     ]
 
 

@@ -1,5 +1,6 @@
 """Render analysis results as human-readable terminal text."""
 
+import shlex
 import textwrap
 
 from devai.ai.result import AIResult
@@ -386,7 +387,7 @@ def format_fix_header(name: str, context: dict) -> str:
     return "\n".join(lines)
 
 
-def format_fix_proposal(result: AIResult, changes: list) -> str:
+def format_fix_proposal(result: AIResult, changes: list, applying: bool = False) -> str:
     """Render a validated proposal and its diff. Model output: untrusted."""
     proposal = result.report
     lines = [f"PROPOSED FIX ({printable(result.model)})", SEPARATOR, "Summary:"]
@@ -410,10 +411,26 @@ def format_fix_proposal(result: AIResult, changes: list) -> str:
         lines.append("  none listed")
 
     usage = result.usage
+    lines.append("")
+    if not applying:
+        lines.append("Nothing was changed. To write this fix, run again with --apply.")
     lines += [
-        "",
-        "Nothing was changed. Applying a fix comes in Phase 6b.",
         f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
         "Written by AI. Review the diff before applying anything.",
     ]
+    return "\n".join(lines)
+
+
+def format_fix_applied(changes: list, tests: list[str]) -> str:
+    """What was written, how to undo it, and how to verify it (never executed)."""
+    paths = " ".join(shlex.quote(printable(str(change.path))) for change in changes)
+    lines = [
+        "",
+        f"Applied to {', '.join(str(change.path) for change in changes)}.",
+        f"Undo with: git restore {paths}",
+    ]
+    if tests:
+        lines.append("Verify with (DevAI doesn't run these):")
+        lines += [line for test in tests for line in wrap(test, "  - ", "    ")]
+    lines.append("Nothing was committed.")
     return "\n".join(lines)

@@ -270,3 +270,16 @@ New decisions are appended; superseded ones are marked, not deleted.
 - **Why:** Exact, unique matching is the safest way to apply a model's edit: when the model miscopies, the edit fails loudly instead of landing in the wrong place. The syntax checks catch the most common breakage before a human even reads the diff. Proposing and applying are separate phases, so the write path gets its own design and approval (6b).
 - **Alternatives:** Whole-file rewrites (simple, but small models drop parts of files, and diffs get noisy); unified diffs from the model (line numbers and context are often wrong); fuzzy matching (applies "close enough" text, which could land in the wrong place).
 - **Validation:** One real proposal on a fictitious project (free model, cost 0) produced a valid edit that passed every check, shown as a correct diff, with the file's hash unchanged afterwards.
+
+## D044: Applying a fix: explicit approval, always undoable, never stale, all or nothing
+
+- **Decision:** `devai fix --apply` writes a validated proposal (D043) only if every layer passes:
+  1. **A terminal and a typed `y`** for every apply, asked separately from the send consent. `--yes` never applies.
+  2. **Undoable.** Before the AI call, each named file must be tracked by git with no staged or unstaged changes (`git ls-files --error-unmatch`, `git status --porcelain`), and valid UTF-8.
+  3. **Not stale.** Right before writing, each file must hold exactly the bytes the proposal was based on, and still be clean.
+  4. **Atomic, all or nothing.** Each new version is written to a temporary file in the same directory (fsync, original permissions copied), then swapped in with `os.replace`. If a swap fails, files already swapped are restored.
+
+  Afterwards DevAI prints `Undo with: git restore <files>` and the suggested tests, which are never run. DevAI uses git only to read: no staging, no commits. `--apply` with `--dry-run` or `--format json` is a usage error. Exit `2` means a safety check stopped the write (nothing written); exit `3` means the AI step, the validation or the write failed (any partial write was rolled back).
+- **Why:** The specification requires that no change be applied without showing it and asking. Requiring clean, tracked files makes every applied fix reversible with one command, so DevAI never needs backup files of its own. Checking content right before writing covers the user editing a file while reading the diff. Model-suggested commands are never executed, because running them would turn a text answer into an action.
+- **Alternatives:** `--yes` also applying (automation, but changes written without a human seeing them); backups next to the files (works outside git, but leaves files behind and makes undo manual); writing in place without a temporary file (a crash midway could leave a half-written file).
+- **Validation:** Real runs on a fictitious repository with a free model (cost 0). A pseudo-terminal that sent its answer too early, with an end-of-input, got "Not applied", and nothing changed: the default protected the files. With the answer typed after the question, the fix was applied: `git diff` matched the proposed diff exactly, HEAD and the index were unchanged, and the fixed function behaved as requested.

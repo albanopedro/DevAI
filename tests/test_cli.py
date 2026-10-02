@@ -1063,7 +1063,7 @@ def test_fix_shows_a_validated_diff_and_writes_nothing(
     assert out.index("DEVAI FIX") < out.index("PROPOSED FIX (fake-model)")
     assert "--- a/stats.py\n+++ b/stats.py\n" in out
     assert '+        raise ValueError("whole must not be zero")\n' in out
-    assert "Nothing was changed. Applying a fix comes in Phase 6b." in out
+    assert "Nothing was changed. To write this fix, run again with --apply." in out
     assert snapshot(fix_project) == before
 
 
@@ -1148,3 +1148,136 @@ def test_fix_paid_model_is_refused(fix_project, capsys, fake_fix_ai, monkeypatch
 
     assert fix(fix_project, "--yes") == EXIT_USAGE
     assert fake_fix_ai.requests == []
+
+
+# --- fix --apply (Phase 6b): writes only after "y", and only when safe ----------------
+
+
+@pytest.fixture
+def fix_repo(git_repo):
+    write(git_repo, "stats.py", STATS_PY)
+    write(git_repo, "tests/test_stats.py", "def test_ok():\n    assert True\n")
+    git_commit(git_repo, "fixture")
+    return git_repo
+
+
+def git_state(repo):
+    """HEAD and the index: they must never change (DevAI never commits or stages)."""
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout
+    staged = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    return head, staged
+
+
+def apply(repo, *extra):
+    return fix(repo, "--apply", "--yes", *extra)  # --yes skips only the send question
+
+
+def test_apply_writes_the_fix_after_yes(fix_repo, capsys, fake_fix_ai, monkeypatch):
+    before_git = git_state(fix_repo)
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_repo) == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "Apply this fix to 1 file (stats.py)? [y/N]" in captured.err
+    assert "Applied to stats.py.\nUndo with: git restore stats.py" in captured.out
+    assert "Nothing was committed." in captured.out
+    text = (fix_repo / "stats.py").read_text()
+    assert 'raise ValueError("whole must not be zero")' in text
+    assert git_state(fix_repo) == before_git  # no commit, nothing staged
+
+
+@pytest.mark.parametrize("reply", ["n\n", "\n", ""])
+def test_anything_but_yes_writes_nothing(
+    fix_repo, capsys, fake_fix_ai, monkeypatch, reply
+):
+    before = snapshot(fix_repo)
+    answer(monkeypatch, reply)
+
+    assert apply(fix_repo) == EXIT_OK
+
+    assert "Not applied. Nothing was changed." in capsys.readouterr().out
+    assert snapshot(fix_repo) == before
+
+
+def test_apply_needs_a_terminal_even_with_yes(fix_repo, capsys, fake_fix_ai):
+    before = snapshot(fix_repo)
+
+    assert apply(fix_repo) == EXIT_USAGE  # fake_ai simulates no terminal
+
+    assert "--apply needs a terminal" in capsys.readouterr().err
+    assert fake_fix_ai.requests == []
+    assert snapshot(fix_repo) == before
+
+
+@pytest.mark.parametrize("option", [["--dry-run"], ["--format", "json"]])
+def test_apply_cannot_be_combined(fix_repo, capsys, fake_fix_ai, monkeypatch, option):
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_repo, *option) == EXIT_USAGE
+    assert "can't be combined" in capsys.readouterr().err
+
+
+def test_uncommitted_changes_refuse_before_asking_the_ai(
+    fix_repo, capsys, fake_fix_ai, monkeypatch
+):
+    write(fix_repo, "stats.py", STATS_PY + "# local edit\n")
+    before = snapshot(fix_repo)
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_repo) == EXIT_USAGE
+
+    assert "has uncommitted changes" in capsys.readouterr().err
+    assert fake_fix_ai.requests == []  # no AI call wasted
+    assert snapshot(fix_repo) == before
+
+
+def test_untracked_file_is_refused(fix_repo, capsys, fake_fix_ai, monkeypatch):
+    write(fix_repo, "new.py", "x = 1\n")
+    answer(monkeypatch, "y\n")
+    args = ["fix", str(fix_repo), "--file", "new.py", "--ask", "x", "--apply", "--yes"]
+
+    assert main(args) == EXIT_USAGE
+    assert "isn't tracked by git" in capsys.readouterr().err
+
+
+def test_outside_git_is_refused(fix_project, capsys, fake_fix_ai, monkeypatch):
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_project) == EXIT_USAGE
+    assert "--apply needs a git repository" in capsys.readouterr().err
+
+
+def test_file_edited_during_the_proposal_is_not_overwritten(
+    fix_repo, capsys, fake_fix_ai, monkeypatch
+):
+    original_complete = fake_fix_ai.complete
+
+    def complete_while_user_edits(request):
+        # The user saves the file in an editor while the AI is working.
+        (fix_repo / "stats.py").write_text(STATS_PY + "# edited meanwhile\n")
+        return original_complete(request)
+
+    monkeypatch.setattr(fake_fix_ai, "complete", complete_while_user_edits)
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_repo) == EXIT_USAGE
+
+    assert "changed after the fix was proposed" in capsys.readouterr().err
+    assert (fix_repo / "stats.py").read_text().endswith("# edited meanwhile\n")
+
+
+def test_no_edits_means_nothing_to_apply(fix_repo, capsys, fake_fix_ai, monkeypatch):
+    fake_fix_ai.result = AIResult(
+        fake_fix_proposal(edits=[]), "fake-model", AIUsage(1, 1)
+    )
+    answer(monkeypatch, "y\n")
+
+    assert apply(fix_repo) == EXIT_OK
+    assert "Apply this fix" not in capsys.readouterr().err

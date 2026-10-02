@@ -24,6 +24,7 @@ from devai.report import (
     format_ai_section,
     format_chat_answer,
     format_chat_header,
+    format_fix_applied,
     format_fix_header,
     format_fix_proposal,
     format_report,
@@ -163,7 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     fix = subparsers.add_parser(
         "fix",
-        help="ask a free AI to propose a fix, shown as a diff (nothing is written)",
+        help="ask a free AI for a fix, shown as a diff; --apply writes it after you "
+        "approve",
     )
     fix.add_argument(
         "path",
@@ -192,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="show exactly what would be sent, without sending it",
+    )
+    fix.add_argument(
+        "--apply",
+        action="store_true",
+        help="after showing the diff, ask whether to write it (needs a terminal; "
+        "--yes never applies)",
     )
     add_ai_send_options(fix)
 
@@ -460,7 +468,17 @@ def ask_ai(
 
 
 def run_fix(args: argparse.Namespace) -> int:
-    """Propose a fix and show it as a diff. Never writes to the project (D043)."""
+    """Propose a fix and show it as a diff (D043).
+
+    Writes only with --apply, after the user types "y" in a terminal and every
+    safety check of fix/apply.py passes (D044).
+    """
+    if args.apply and (args.dry_run or args.format == "json"):
+        print_error("--apply can't be combined with --dry-run or --format json")
+        return EXIT_USAGE
+    if args.apply and not is_interactive():
+        print_error("--apply needs a terminal: you approve every change yourself")
+        return EXIT_USAGE
     if len(args.file) > MAX_FIX_FILES:
         print_error(f"a fix may change at most {MAX_FIX_FILES} files (--file)")
         return EXIT_USAGE
@@ -484,6 +502,14 @@ def run_fix(args: argparse.Namespace) -> int:
     if args.dry_run:
         print(format_fix_preview(context, args.format))
         return EXIT_OK
+    if args.apply:
+        from devai.fix.apply import ApplyError, check_can_apply
+
+        try:
+            check_can_apply(info.path, files)  # before spending an AI call
+        except ApplyError as problem:
+            print_error(str(problem))
+            return EXIT_USAGE
 
     try:
         client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
@@ -517,8 +543,40 @@ def run_fix(args: argparse.Namespace) -> int:
         print(fix_to_json(info.name, context, result, changes, rejected))
     elif result is not None and rejected is None:
         print()
-        print(format_fix_proposal(result, changes))
-    return EXIT_AI_ERROR if failed or rejected else EXIT_OK
+        print(format_fix_proposal(result, changes, applying=args.apply), flush=True)
+    if failed or rejected:
+        return EXIT_AI_ERROR
+    if args.apply and changes:
+        return apply_fix(info.path, changes, result.report.tests)
+    return EXIT_OK
+
+
+def apply_fix(root: Path, changes: list, tests: list[str]) -> int:
+    """Ask, then write. Every check is repeated right before writing (D044)."""
+    from devai.fix.apply import ApplyError, WriteError, apply_changes
+
+    names = ", ".join(str(change.path) for change in changes)
+    noun = "file" if len(changes) == 1 else "files"
+    print(
+        f"\nApply this fix to {len(changes)} {noun} ({names})? [y/N] ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
+    if sys.stdin.readline().strip().lower() not in {"y", "yes"}:
+        print("Not applied. Nothing was changed.")
+        return EXIT_OK
+    try:
+        apply_changes(root, changes)
+    except ApplyError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+    except WriteError as problem:
+        print_error(str(problem))
+        return EXIT_AI_ERROR
+
+    print(format_fix_applied(changes, tests))
+    return EXIT_OK
 
 
 def prepare_ai(assume_yes: bool, provider: str | None) -> tuple[LLMClient, AISettings]:
