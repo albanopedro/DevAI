@@ -16,11 +16,15 @@ from devai.chat import ChatError, Selection, build_chat_context, select_files
 from devai.chat.retrieval import SelectedFile, extra_file
 from devai.checks import run_checks
 from devai.checks.secrets import read_scannable_text
-from devai.docmap import build_docs_map
+from devai.docgen.context import build_docs_context
+from devai.docgen.plan import DocsError, find_targets, plan_docs
+from devai.docmap import build_docs_map, doc_sources
+from devai.docmap.python_docs import NotPython
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
 from devai.json_report import (
     chat_to_json,
     coverage_to_json,
+    doc_proposal_to_json,
     docs_to_json,
     fix_to_json,
     generated_tests_to_json,
@@ -35,11 +39,14 @@ from devai.report import (
     format_chat_answer,
     format_chat_header,
     format_coverage_map,
+    format_doc_proposal,
+    format_docs_header,
     format_docs_map,
     format_fix_applied,
     format_fix_header,
     format_fix_proposal,
     format_generated_tests,
+    format_nothing_to_document,
     format_report,
     format_review,
     format_testgen_header,
@@ -71,6 +78,7 @@ FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 # Shown on stderr while the model works, per AI task.
 PROGRESS = {
     "tests": "Asking {model} for tests…",
+    "docs": "Asking {model} for docs…",
     "fix": "Asking {model} for a fix…",
     "analysis": "Analyzing with {model}…",
     "review": "Reviewing with {model}…",
@@ -78,6 +86,7 @@ PROGRESS = {
 }
 LOCAL_PROGRESS = {
     "tests": "Asking {model} for tests locally (nothing leaves this machine)…",
+    "docs": "Asking {model} for docs locally (nothing leaves this machine)…",
     "fix": "Asking {model} for a fix locally (nothing leaves this machine)…",
     "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
     "review": "Reviewing locally with {model} (nothing leaves this machine)…",
@@ -260,7 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(test)
 
-    docs = subparsers.add_parser("docs", help="estimate where documentation is missing")
+    docs = subparsers.add_parser(
+        "docs",
+        help="estimate where documentation is missing; with --file and --ai, "
+        "propose docs",
+    )
     docs.add_argument(
         "path",
         nargs="?",
@@ -273,6 +286,25 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="output format (default: text)",
     )
+    docs.add_argument(
+        "--file", metavar="PATH", help="with --ai: the source file to document"
+    )
+    docs.add_argument(
+        "--ai",
+        action="store_true",
+        help="ask a free AI for docstrings or JSDoc (shown first as a diff)",
+    )
+    docs.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --ai: show exactly what would be sent, without sending it",
+    )
+    docs.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --ai: write the docs after you approve (needs a terminal)",
+    )
+    add_ai_send_options(docs)
 
     return parser
 
@@ -626,14 +658,16 @@ def run_fix(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def apply_fix(root: Path, changes: list, tests: list[str]) -> int:
+def apply_fix(
+    root: Path, changes: list, tests: list[str], what: str = "this fix"
+) -> int:
     """Ask, then write. Every check is repeated right before writing (D044)."""
     from devai.fix.apply import ApplyError, WriteError, apply_changes
 
     names = ", ".join(str(change.path) for change in changes)
     noun = "file" if len(changes) == 1 else "files"
     print(
-        f"\nApply this fix to {len(changes)} {noun} ({names})? [y/N] ",
+        f"\nApply {what} to {len(changes)} {noun} ({names})? [y/N] ",
         end="",
         file=sys.stderr,
         flush=True,
@@ -787,6 +821,12 @@ def create_tests(root: Path, path, content: str, command: str) -> int:
 
 def run_docs(args: argparse.Namespace) -> int:
     """Where docs seem to be missing. A map, not a check: always exit 0 (D048)."""
+    for option in ("dry_run", "apply", "yes", "provider", "file"):
+        if getattr(args, option) and not args.ai:
+            print_error(f"--{option.replace('_', '-')} requires --ai")
+            return EXIT_USAGE
+    if args.ai:
+        return run_docs_generation(args)
     path = Path(args.path)
     try:
         info = analyze_project(path)
@@ -798,6 +838,100 @@ def run_docs(args: argparse.Namespace) -> int:
         print(docs_to_json(info.name, docs))
     else:
         print(format_docs_map(info.name, docs))
+    return EXIT_OK
+
+
+def run_docs_generation(args: argparse.Namespace) -> int:
+    """Propose docs for one file; write them only with --apply and a "y" (D049)."""
+    if not args.file:
+        print_error("--ai needs the file to document: --file PATH")
+        return EXIT_USAGE
+    if args.apply and (args.dry_run or args.format == "json"):
+        print_error("--apply can't be combined with --dry-run or --format json")
+        return EXIT_USAGE
+    if args.apply and not is_interactive():
+        print_error("--apply needs a terminal: you approve every change yourself")
+        return EXIT_USAGE
+
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    try:
+        source = extra_file(info.path, args.file, info.files, "named with --file")
+    except ChatError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+    if not doc_sources((source.path,)):
+        print_error(
+            f"{source.path}: docs can be written for Python, JavaScript or "
+            "TypeScript source files (not tests or config files)"
+        )
+        return EXIT_USAGE
+    try:
+        targets = find_targets(source.path, source.text)
+    except NotPython:
+        print_error(f"{source.path} isn't valid Python; DevAI won't change it")
+        return EXIT_USAGE
+
+    context = build_docs_context(source, targets, info, run_checks(info))
+    if not context["names"]:
+        if args.format == "json":
+            print(doc_proposal_to_json(info.name, context, None, None, None))
+        else:
+            print(format_nothing_to_document(source.path, targets))
+        return EXIT_OK  # nothing to ask: no AI call
+    if args.dry_run:
+        print(format_docs_preview(context, args.format))
+        return EXIT_OK
+    if args.apply:
+        from devai.fix.apply import ApplyError, check_can_apply
+
+        try:
+            check_can_apply(info.path, [source])  # before spending an AI call
+        except ApplyError as problem:
+            print_error(str(problem))
+            return EXIT_USAGE
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.docgen.ai import docs_question, docs_request  # needs [ai]
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "text":
+        print(format_docs_header(info.name, context), flush=True)
+    result, failed = run_ai(
+        client,
+        settings,
+        docs_request(context),
+        docs_question(context, settings),
+        args.yes,
+        task="docs",
+    )
+    if failed:
+        return EXIT_AI_ERROR
+    if result is None:
+        return EXIT_OK  # declined: nothing was sent
+    texts = [(doc.name, doc.text) for doc in result.report.docs]
+    try:
+        plan = plan_docs(source.path, source.text, texts, context["names"])
+    except DocsError as problem:
+        print_error(f"The proposed docs were rejected: {problem}. Nothing was changed.")
+        if args.format == "json":
+            print(doc_proposal_to_json(info.name, context, result, None, str(problem)))
+        return EXIT_AI_ERROR
+
+    if args.format == "json":
+        print(doc_proposal_to_json(info.name, context, result, plan, None))
+        return EXIT_OK
+    print()
+    print(format_doc_proposal(result, plan, applying=args.apply), flush=True)
+    if args.apply and plan.change is not None:
+        return apply_fix(info.path, [plan.change], [], what="these docs")
     return EXIT_OK
 
 
@@ -1060,6 +1194,27 @@ def format_testgen_preview(context: dict, output_format: str) -> str:
         f"Source:          {printable(context['source']['path'])}",
         f"Existing tests:  {printable(', '.join(existing)) or 'none'}",
         f"Untested names:  {printable(', '.join(context['untested_names'])) or 'none'}",
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def format_docs_preview(context: dict, output_format: str) -> str:
+    """Show what a docs request would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+    compact = serialize_context(context)
+    file = context["file"]
+    lines = [
+        "AI DOCS CONTEXT PREVIEW (dry run: nothing was sent, nothing was changed)",
+        SEPARATOR,
+        f"File:   {printable(file['path'])} ({file['language']}), sent in full",
+        f"Names:  {printable(', '.join(context['names']))}",
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),
         SEPARATOR,

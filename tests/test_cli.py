@@ -9,6 +9,7 @@ from conftest import (
     FAKE_SECRETS,
     fake_ai_report,
     fake_chat_answer,
+    fake_docs_proposal,
     fake_fix_proposal,
     fake_generated_tests,
     fake_review_report,
@@ -1625,3 +1626,197 @@ def test_docs_map_runs_nothing_and_sends_nothing(docs_project, capsys, monkeypat
     monkeypatch.setattr(socket, "socket", no_network)
 
     assert main(["docs", str(docs_project)]) == EXIT_OK
+
+
+# --- docs --ai (Phase 8b): placed by DevAI, proven docs-only, written after "y" -------
+
+DOCUMENTED_STATS_PY = (
+    '"""Small statistics helpers."""\n'
+    "\n"
+    "def average(values):\n"
+    '    """Return the arithmetic mean of values."""\n'
+    "    return sum(values) / len(values)\n"
+    "\n"
+    "\n"
+    "def percent(part, whole):\n"
+    '    """Return part as a percentage of whole."""\n'
+    "    return part / whole * 100\n"
+)
+
+
+@pytest.fixture
+def docs_repo(git_repo):
+    write(git_repo, "stats.py", STATS_PY)
+    git_commit(git_repo, "fixture")
+    return git_repo
+
+
+@pytest.fixture
+def fake_docs_ai(fake_ai):
+    fake_ai.result = AIResult(fake_docs_proposal(), "fake-model", AIUsage(40, 50))
+    return fake_ai
+
+
+def document(repo, *extra):
+    return main(["docs", str(repo), "--file", "stats.py", "--ai", "--yes", *extra])
+
+
+def test_docs_are_shown_as_a_diff_and_nothing_is_written(
+    docs_repo, capsys, fake_docs_ai
+):
+    before = snapshot(docs_repo)
+
+    assert document(docs_repo) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "File:     stats.py (Python)" in out
+    assert "Names:    (module), average, percent" in out
+    assert '+    """Return the arithmetic mean of values."""' in out
+    assert "Added:  (module), average, percent" in out
+    assert "Only documentation changed: checked." in out
+    assert "Notes from the AI:\n  - average raises ZeroDivisionError" in out
+    assert "To write these docs, run again with --apply." in out
+    assert snapshot(docs_repo) == before
+    assert fake_docs_ai.contexts[0]["names"] == ["(module)", "average", "percent"]
+
+
+def test_docs_send_the_same_context_as_the_dry_run(docs_repo, capsys, fake_docs_ai):
+    main(["docs", str(docs_repo), "--file", "stats.py", "--ai", "--dry-run"])
+    assert "AI DOCS CONTEXT PREVIEW (dry run" in capsys.readouterr().out
+    args = ["--file", "stats.py", "--ai", "--dry-run", "--format", "json"]
+    main(["docs", str(docs_repo), *args])
+    previewed = json.loads(capsys.readouterr().out)
+
+    document(docs_repo)
+
+    assert fake_docs_ai.contexts == [previewed]
+
+
+def test_docs_apply_writes_after_yes(docs_repo, capsys, fake_docs_ai, monkeypatch):
+    before_git = git_state(docs_repo)
+    answer(monkeypatch, "y\n")
+
+    assert document(docs_repo, "--apply") == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "Apply these docs to 1 file (stats.py)? [y/N]" in captured.err
+    assert "Applied to stats.py.\nUndo with: git restore stats.py" in captured.out
+    assert (docs_repo / "stats.py").read_text() == DOCUMENTED_STATS_PY
+    assert git_state(docs_repo) == before_git  # no commit, nothing staged
+
+
+def test_docs_apply_writes_nothing_without_yes(
+    docs_repo, capsys, fake_docs_ai, monkeypatch
+):
+    before = snapshot(docs_repo)
+    answer(monkeypatch, "\n")
+
+    assert document(docs_repo, "--apply") == EXIT_OK
+
+    assert "Not applied. Nothing was changed." in capsys.readouterr().out
+    assert snapshot(docs_repo) == before
+
+
+def test_docs_apply_refuses_uncommitted_changes_before_any_ai_call(
+    docs_repo, capsys, fake_docs_ai, monkeypatch
+):
+    write(docs_repo, "stats.py", STATS_PY + "\n# work in progress\n")
+    answer(monkeypatch, "y\n")
+
+    assert document(docs_repo, "--apply") == EXIT_USAGE
+
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert fake_docs_ai.requests == []
+
+
+def test_docs_apply_needs_a_terminal(docs_repo, capsys, fake_docs_ai):
+    assert document(docs_repo, "--apply") == EXIT_USAGE
+    assert "--apply needs a terminal" in capsys.readouterr().err
+
+
+def test_docs_unsafe_text_is_rejected_and_nothing_is_written(
+    docs_repo, capsys, fake_ai, monkeypatch
+):
+    injected = 'Mean."""\nimport os\nos.system("rm -rf ~")\n"""'
+    fake_ai.result = AIResult(
+        fake_docs_proposal([("average", injected)]), "fake-model", AIUsage(1, 1)
+    )
+    before = snapshot(docs_repo)
+    answer(monkeypatch, "y\n")
+
+    assert document(docs_repo, "--apply") == EXIT_AI_ERROR
+
+    err = capsys.readouterr().err
+    assert 'The proposed docs were rejected: the docs for average contain """' in err
+    assert "Apply these docs" not in err
+    assert snapshot(docs_repo) == before
+
+
+def test_docs_for_unknown_names_are_dropped(docs_repo, capsys, fake_ai):
+    docs = [("average", "Return the mean."), ("median", "Invented.")]
+    fake_ai.result = AIResult(fake_docs_proposal(docs), "fake-model", AIUsage(1, 1))
+
+    assert document(docs_repo) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "Added:  average" in out
+    assert "Not used (1):\n  - median: not one of the names DevAI asked about" in out
+
+
+def test_docs_json(docs_repo, capsys, fake_docs_ai):
+    document(docs_repo, "--format", "json")
+
+    document_json = json.loads(capsys.readouterr().out)
+    assert document_json["docs"]["file"] == "stats.py"
+    assert document_json["docs"]["applied"] is False
+    assert document_json["ai"]["added"] == ["(module)", "average", "percent"]
+    assert document_json["ai"]["dropped"] == []
+    assert document_json["ai"]["diff"].startswith("--- a/stats.py\n")
+
+
+def test_docs_for_javascript(docs_repo, capsys, fake_ai):
+    write(docs_repo, "search.js", "export function search(query) {\n  return [];\n}\n")
+    git_commit(docs_repo, "js")
+    proposal = fake_docs_proposal([("search", "Find notes.\n\n@param {string} query")])
+    fake_ai.result = AIResult(proposal, "fake-model", AIUsage(1, 1))
+
+    args = ["docs", str(docs_repo), "--file", "search.js", "--ai", "--yes"]
+    assert main(args) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "+/**\n+ * Find notes.\n+ *\n+ * @param {string} query\n+ */" in out
+    assert "a single\n/** */ comment right above an export" in out
+
+
+def test_docs_for_a_documented_file_need_no_ai_call(docs_repo, capsys, fake_docs_ai):
+    write(docs_repo, "stats.py", DOCUMENTED_STATS_PY)
+
+    assert document(docs_repo) == EXIT_OK
+
+    assert "Every public name in stats.py has docs. Nothing was sent." in (
+        capsys.readouterr().out
+    )
+    assert fake_docs_ai.requests == []
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--file", "stats.py"], "--file requires --ai"),
+        (["--apply"], "--apply requires --ai"),
+        (["--ai"], "--ai needs the file to document: --file PATH"),
+        (["--ai", "--file", "README.md"], "Python, JavaScript or TypeScript"),
+        (["--ai", "--file", "tests/test_stats.py"], "not tests or config files"),
+        (["--ai", "--file", "broken.py"], "broken.py isn't valid Python"),
+        (["--ai", "--file", "stats.py", "--apply", "--dry-run"], "can't be combined"),
+    ],
+)
+def test_docs_usage_errors(docs_repo, capsys, fake_docs_ai, args, message):
+    write(docs_repo, "README.md", "# Stats\n")
+    write(docs_repo, "tests/test_stats.py", "def test_ok():\n    pass\n")
+    write(docs_repo, "broken.py", "def broken(:\n")
+
+    assert main(["docs", str(docs_repo), *args]) == EXIT_USAGE
+
+    assert message in capsys.readouterr().err
+    assert fake_docs_ai.requests == []

@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 8a: documentation gaps).
+> **Status:** early development (Phase 8b: AI-written docstrings).
 
 ## Goal
 
@@ -268,6 +268,22 @@ devai docs --format json   # for scripts
 - **Test files are left out:** tests explain themselves through their names.
 - Always exits `0`: like `devai test`, it is a map. Not every name needs a docstring; use it to choose where to look.
 
+#### Writing docs with AI (`--file ... --ai`)
+
+```bash
+devai docs --file src/stats.py --ai            # propose docstrings, shown as a diff
+devai docs --file src/stats.py --ai --apply    # write them, after your "y"
+devai docs --file src/stats.py --ai --dry-run  # see what would be sent
+```
+
+- **What is sent:** the file, whole and with secrets redacted, the names in it without docs (the ones `devai docs` lists) and the project summary. If nothing is missing, nothing is sent.
+- **The AI writes only the text; DevAI places it.** A Python docstring goes right after the definition's header, with the body's indentation (the module's goes at the top, after any leading comments); a JSDoc block goes right above the export. Lines are wrapped at 79 columns. The docs follow the language of the file's own comments.
+- **Proof that only documentation changed.** In Python, the code with its docstrings removed must parse to exactly the same syntax tree as before. In JavaScript and TypeScript, every addition must be a single `/** */` comment right above an export, with no code in it.
+- **The proposal is rejected whole** if any text contains `"""` or `*/` (which would end the docstring or the comment, and could slip code in), a redacted line or a possible secret, or if the proof fails. Docs for a name DevAI didn't ask about are dropped and listed.
+- **`--apply` works like `devai fix --apply`:** the file must be committed and unchanged, you type `y`, the write is atomic, and `git restore <file>` undoes it.
+- **Docs can still be wrong.** DevAI proves the code is untouched, not that the text is true. In a real test, a free model described a `filter` backwards, calling the entries it keeps the ones it removes. Read the diff before you apply it.
+- Only missing docs are written. To correct an existing docstring, use `devai fix --file X --ask "..."`.
+
 ### Proposing fixes
 
 `devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
@@ -407,6 +423,14 @@ src/devai/
 │   ├── python_docs.py     # public Python names without a docstring (ast)
 │   ├── js_docs.py         # JS/TS exports without JSDoc (patterns)
 │   └── readme.py          # README sections and npm scripts that don't exist
+├── docgen/           # `devai docs --ai`: docs written by AI, placed by DevAI
+│   ├── context.py         # what it may receive: one file, the names without docs
+│   ├── ai.py              # the task: prompt, consent question
+│   ├── schema.py          # DocsProposal: one text per name, notes
+│   ├── lines.py           # cleaning, wrapping and inserting the text
+│   ├── python_insert.py   # where docstrings go, and the syntax-tree proof
+│   ├── js_insert.py       # where JSDoc goes: one comment per block
+│   └── plan.py            # safety checks, placement and the diff (nothing written)
 ├── testgen/          # `devai test --ai`: new test files proposed by AI
 │   ├── context.py         # what it may receive: the source and its existing tests
 │   ├── ai.py              # the task: prompt, consent question

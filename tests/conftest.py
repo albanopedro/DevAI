@@ -20,6 +20,7 @@ if importlib.util.find_spec("pydantic") is None:
         "test_fix_ai.py",
         "test_fix_apply.py",
         "test_testgen.py",
+        "test_docgen_ai.py",
     ]
 
 
@@ -199,3 +200,20 @@ def fake_generated_tests(
         notes=["Assumes tests import modules from the project root."],
     )
     return GeneratedTests(**(fields | overrides))
+
+
+def fake_docs_proposal(docs=None, **overrides):
+    """A valid DocsProposal for STATS_PY-like code (requires [ai])."""
+    from devai.docgen.schema import DocsProposal, DocText
+
+    if docs is None:
+        docs = [
+            ("(module)", "Small statistics helpers."),
+            ("average", "Return the arithmetic mean of values."),
+            ("percent", "Return part as a percentage of whole."),
+        ]
+    fields = dict(
+        docs=[DocText(name=name, text=text) for name, text in docs],
+        notes=["average raises ZeroDivisionError for an empty list."],
+    )
+    return DocsProposal(**(fields | overrides))

@@ -174,3 +174,34 @@ def generated_tests_to_json(
             "rejected": rejected,
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def doc_proposal_to_json(
+    name: str, context: dict, ai: AIResult | None, plan, rejected: str | None
+) -> str:
+    """A docs proposal as JSON: the names, the proposal, the diff (nothing applied)."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "docs": {
+            "project": name,
+            "file": context["file"]["path"],
+            "names": context["names"],
+            "applied": False,
+        },
+    }
+    if ai is not None:
+        change = plan.change if plan is not None else None
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "proposal": ai.report.model_dump(mode="json"),
+            "rejected": rejected,
+            "added": list(plan.added) if plan is not None else [],
+            "dropped": [
+                {"name": dropped, "reason": why}
+                for dropped, why in (plan.dropped if plan is not None else ())
+            ],
+            "diff": change.diff if change is not None else None,
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)

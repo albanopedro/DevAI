@@ -11,10 +11,13 @@ import difflib
 import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from devai.analyzer.testing import is_test_file
 from devai.checks.secrets import match_line
-from devai.fix.schema import FixProposal
+
+if TYPE_CHECKING:  # Pydantic is optional: FileChange and the diff work without it
+    from devai.fix.schema import FixProposal
 
 MAX_EDITS = 10
 MAX_CHANGED_LINES = 200  # added + removed, over all files
@@ -34,7 +37,7 @@ class FileChange:
 
 
 def apply_edits(
-    proposal: FixProposal, originals: dict[PurePosixPath, str]
+    proposal: "FixProposal", originals: dict[PurePosixPath, str]
 ) -> list[FileChange]:
     """The changes `proposal` would make to `originals` (path → current text)."""
     if len(proposal.edits) > MAX_EDITS:

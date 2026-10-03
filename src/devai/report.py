@@ -662,3 +662,88 @@ def format_readme_map(readme) -> list[str]:
             f"  npm scripts:       {mentioned} mentioned, {found_in} in package.json"
         )
     return lines
+
+
+def format_docs_header(name: str, context: dict) -> str:
+    file = context["file"]
+    lines = [
+        "DEVAI DOCS",
+        SEPARATOR,
+        f"Project:  {printable(name)}",
+        f"File:     {printable(file['path'])} ({file['language']})",
+    ]
+    lines += wrap(f"Names:    {', '.join(context['names'])}", "", "          ")
+    names = context["truncated"].get("names")
+    if names:
+        lines.append(
+            f"          (the first {names['shown']} of {names['total']}; "
+            "run again for the rest)"
+        )
+    return "\n".join(lines)
+
+
+def format_nothing_to_document(path, targets: list) -> str:
+    """Why no AI call is needed for this file."""
+    inline = [target.name for target in targets if target.inline]
+    if len(inline) < len(targets):
+        return (
+            f"The names without docs in {printable(str(path))} are past the lines "
+            "DevAI sends. Nothing was sent."
+        )
+    if inline:
+        return (
+            f"Nothing to document in {printable(str(path))} that DevAI can place: "
+            f"{', '.join(inline)} {'has' if len(inline) == 1 else 'have'} the body "
+            "on the definition's line. Nothing was sent."
+        )
+    return f"Every public name in {printable(str(path))} has docs. Nothing was sent."
+
+
+def format_doc_proposal(result: AIResult, plan, applying: bool = False) -> str:
+    """Render the placed docs as a diff. Model output: untrusted."""
+    lines = [f"PROPOSED DOCS ({printable(result.model)})", SEPARATOR]
+    change = plan.change
+    if change is not None:
+        # The diff keeps its own lines; only control characters are removed.
+        lines += [printable(line) for line in change.diff.rstrip("\n").split("\n")]
+        lines += ["", f"Added:  {', '.join(plan.added)}"]
+    else:
+        lines.append("No usable docs in the answer: nothing to add.")
+    if plan.dropped:
+        lines += ["", f"Not used ({len(plan.dropped)}):"]
+        lines += [
+            line
+            for name, why in plan.dropped
+            for line in wrap(f"{name}: {why}", "  - ", "    ")
+        ]
+    if change is not None:
+        lines.append("")
+        if change.path.suffix == ".py":
+            lines += [
+                "Only documentation changed: checked. Without docstrings, the code",
+                "parses to exactly the same syntax tree as before.",
+            ]
+        else:
+            lines += [
+                "Only documentation changed: checked. Each addition is a single",
+                "/** */ comment right above an export, with no code in it.",
+            ]
+
+    notes = result.report.notes
+    if notes:
+        lines += ["", "Notes from the AI:"]
+        lines += [line for note in notes for line in wrap(note, "  - ", "    ")]
+
+    usage = result.usage
+    lines.append("")
+    if change is None:
+        lines.append("Nothing was changed.")
+    elif not applying:
+        lines.append(
+            "Nothing was changed. To write these docs, run again with --apply."
+        )
+    lines += [
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI. Read it before applying: docs can be wrong about the code.",
+    ]
+    return "\n".join(lines)
