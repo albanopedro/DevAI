@@ -16,10 +16,12 @@ from devai.chat import ChatError, Selection, build_chat_context, select_files
 from devai.chat.retrieval import SelectedFile, extra_file
 from devai.checks import run_checks
 from devai.checks.secrets import read_scannable_text
+from devai.docmap import build_docs_map
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
 from devai.json_report import (
     chat_to_json,
     coverage_to_json,
+    docs_to_json,
     fix_to_json,
     generated_tests_to_json,
     review_to_json,
@@ -33,6 +35,7 @@ from devai.report import (
     format_chat_answer,
     format_chat_header,
     format_coverage_map,
+    format_docs_map,
     format_fix_applied,
     format_fix_header,
     format_fix_proposal,
@@ -257,6 +260,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(test)
 
+    docs = subparsers.add_parser("docs", help="estimate where documentation is missing")
+    docs.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="project directory (default: current directory)",
+    )
+    docs.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+
     return parser
 
 
@@ -307,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_fix(args)
     if args.command == "test":
         return run_test(args)
+    if args.command == "docs":
+        return run_docs(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -763,6 +782,22 @@ def create_tests(root: Path, path, content: str, command: str) -> int:
         print_error(str(problem))
         return EXIT_USAGE
     print(format_tests_created(path, undo_command(path, created), command))
+    return EXIT_OK
+
+
+def run_docs(args: argparse.Namespace) -> int:
+    """Where docs seem to be missing. A map, not a check: always exit 0 (D048)."""
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    docs = build_docs_map(info)
+    if args.format == "json":
+        print(docs_to_json(info.name, docs))
+    else:
+        print(format_docs_map(info.name, docs))
     return EXIT_OK
 
 

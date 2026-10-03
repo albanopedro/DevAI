@@ -129,6 +129,28 @@ def coverage_to_json(name: str, coverage) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False)
 
 
+def docs_to_json(name: str, docs) -> str:
+    """`devai docs` as JSON."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "docs_map": {
+            "project": name,
+            "sources_checked": docs.sources_checked,
+            "languages": list(docs.languages),
+            "public_names": docs.public_names,
+            "documented": docs.documented,
+            "undocumented": {
+                str(path): list(names) for path, names in docs.undocumented
+            },
+            "not_parsed": [str(path) for path in docs.not_parsed],
+            "readme": None if docs.readme is None else asdict(docs.readme),
+            "estimate": True,  # names and patterns; README scripts are exact
+        },
+    }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
 def generated_tests_to_json(
     name: str, context: dict, ai: AIResult | None, path, rejected: str | None
 ) -> str:

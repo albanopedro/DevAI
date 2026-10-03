@@ -1504,3 +1504,124 @@ def test_tests_json(testgen_repo, capsys, fake_tests_ai):
     assert document["tests"]["created"] is False
     assert document["ai"]["path"] == "tests/test_stats_edge_cases.py"
     assert document["ai"]["rejected"] is None
+
+
+# --- docs map (Phase 8a) --------------------------------------------------------------
+
+
+@pytest.fixture
+def docs_project(tmp_path):
+    readme = "# Tool\n\n## Usage\n\n`npm run dev` or `npm run deploy`\n"
+    write(tmp_path, "README.md", readme)
+    write(tmp_path, "LICENSE", "MIT\n")
+    write(tmp_path, "package.json", '{"scripts": {"dev": "vite"}}')
+    write(tmp_path, "src/app.py", "def run():\n    pass\n")
+    write(tmp_path, "web/api.js", "/** Call it. */\nexport function api() {}\n")
+    return tmp_path
+
+
+def test_docs_map_text(docs_project, capsys):
+    assert main(["docs", str(docs_project)]) == EXIT_OK
+
+    assert capsys.readouterr().out == (
+        "DEVAI DOCS\n"
+        "────────────────────────────────────\n"
+        f"Project:     {docs_project.name}\n"
+        "Source:      2 files checked (JavaScript, Python)\n"
+        "Documented:  1 of 3 public names (33%)\n"
+        "\n"
+        "Names without docs (2 in 1 file):\n"
+        "  src/app.py: (module), run\n"
+        "  (module): the file has no module docstring.\n"
+        "\n"
+        "README.md:\n"
+        "  Sections found:    usage, license (LICENSE file)\n"
+        "  Sections missing:  installation, tests\n"
+        "  npm scripts it runs that no package.json has (1):\n"
+        "    npm run deploy  (line 5)\n"
+        "\n"
+        "An estimate: Python is parsed, JavaScript and TypeScript exports are found\n"
+        "by pattern, and only /** */ counts as JSDoc. Not every name needs docs: use\n"
+        "it to choose where to look. README sections are found by heading words.\n"
+    )
+
+
+def test_docs_map_json(docs_project, capsys):
+    main(["docs", str(docs_project), "--format", "json"])
+
+    document = json.loads(capsys.readouterr().out)["docs_map"]
+    assert document["public_names"] == 3
+    assert document["documented"] == 1
+    assert document["undocumented"] == {"src/app.py": ["(module)", "run"]}
+    assert document["readme"]["path"] == "README.md"
+    assert document["readme"]["missing_sections"] == ["installation", "tests"]
+    assert document["readme"]["missing_scripts"] == [
+        {"command": "npm run deploy", "script": "deploy", "line": 5}
+    ]
+    assert document["estimate"] is True
+
+
+def test_docs_map_when_everything_is_documented(tmp_path, capsys):
+    write(tmp_path, "app.py", '"""App."""\n\n\ndef run():\n    """Run."""\n')
+    write(tmp_path, "README.md", "# App\n\n`npm test`\n")
+    write(tmp_path, "package.json", '{"scripts": {"test": "vitest"}}')
+
+    assert main(["docs", str(tmp_path)]) == EXIT_OK
+
+    output = capsys.readouterr().out
+    assert "Documented:  2 of 2 public names (100%)" in output
+    assert "Every public name checked has docs." in output
+    assert "npm scripts:       1 mentioned, found in package.json" in output
+
+
+def test_docs_map_without_sources_or_readme(tmp_path, capsys):
+    write(tmp_path, "notes.txt", "nothing to document\n")
+
+    assert main(["docs", str(tmp_path)]) == EXIT_OK
+
+    output = capsys.readouterr().out
+    assert "Documented:  no public functions or classes found" in output
+    assert "No Python, JavaScript or TypeScript source files to check." in output
+    assert "README: none found at the project root." in output
+
+
+def test_docs_map_with_an_unreadable_package_json(tmp_path, capsys):
+    write(tmp_path, "README.md", "`npm run dev`\n")
+    write(tmp_path, "package.json", "{ not json")
+
+    assert main(["docs", str(tmp_path)]) == EXIT_OK
+    assert "not checked (a package.json couldn't be read)" in capsys.readouterr().out
+
+
+def test_docs_map_of_a_readme_that_is_not_markdown(tmp_path, capsys):
+    write(tmp_path, "README.rst", "Tool\n====\n")
+
+    assert main(["docs", str(tmp_path)]) == EXIT_OK
+    assert (
+        "README.rst: not checked (only Markdown READMEs are read)."
+        in capsys.readouterr().out
+    )
+
+
+def test_docs_map_of_a_missing_directory(tmp_path, capsys):
+    assert main(["docs", str(tmp_path / "nope")]) == EXIT_USAGE
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_docs_map_runs_nothing_and_sends_nothing(docs_project, capsys, monkeypatch):
+    import socket
+    import subprocess as subprocess_module
+
+    real_run = subprocess_module.run
+
+    def only_git(command, *args, **kwargs):
+        assert command[0] == "git", f"unexpected command: {command}"
+        return real_run(command, *args, **kwargs)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network access attempted")
+
+    monkeypatch.setattr(subprocess_module, "run", only_git)
+    monkeypatch.setattr(socket, "socket", no_network)
+
+    assert main(["docs", str(docs_project)]) == EXIT_OK

@@ -4,6 +4,8 @@ import shlex
 import textwrap
 
 from devai.ai.result import AIResult
+from devai.docmap import MODULE
+from devai.docmap.readme import MARKDOWN_SUFFIXES
 from devai.models import (
     ChangedFile,
     CheckReport,
@@ -552,3 +554,111 @@ def format_tests_created(path, undo: str, command: str) -> str:
             "Nothing was committed.",
         ]
     )
+
+
+MAX_LISTED_UNDOCUMENTED = 30
+
+
+def format_docs_map(name: str, docs) -> str:
+    """Render `devai docs`: where documentation seems to be missing."""
+    languages = ", ".join(docs.languages) or "none"
+    lines = [
+        "DEVAI DOCS",
+        SEPARATOR,
+        f"Project:     {printable(name)}",
+        f"Source:      {docs.sources_checked} "
+        f"{plural(docs.sources_checked, 'file')} checked ({languages})",
+        f"Documented:  {describe_documented(docs)}",
+        "",
+    ]
+
+    missing = docs.undocumented
+    if missing:
+        count = sum(len(names) for _, names in missing)
+        lines.append(
+            f"Names without docs ({count} in {len(missing)} "
+            f"{plural(len(missing), 'file')}):"
+        )
+        for path, names in missing[:MAX_LISTED_UNDOCUMENTED]:
+            lines += wrap(f"{path}: {', '.join(names)}", "  ", "      ")
+        if len(missing) > MAX_LISTED_UNDOCUMENTED:
+            lines.append(
+                f"  … and {len(missing) - MAX_LISTED_UNDOCUMENTED} more files "
+                "(see --format json)"
+            )
+        if any(MODULE in names for _, names in missing):
+            lines.append(f"  {MODULE}: the file has no module docstring.")
+    elif docs.public_names:
+        lines.append("Every public name checked has docs.")
+    elif not docs.sources_checked:
+        lines.append("No Python, JavaScript or TypeScript source files to check.")
+    if docs.not_parsed:
+        lines += [
+            "",
+            "Not parsed (invalid Python): "
+            + ", ".join(printable(str(path)) for path in docs.not_parsed),
+        ]
+
+    lines += ["", *format_readme_map(docs.readme)]
+    lines += [
+        "",
+        "An estimate: Python is parsed, JavaScript and TypeScript exports are found",
+        "by pattern, and only /** */ counts as JSDoc. Not every name needs docs: use",
+        "it to choose where to look. README sections are found by heading words.",
+    ]
+    return "\n".join(lines)
+
+
+def describe_documented(docs) -> str:
+    if not docs.public_names:
+        return "no public functions or classes found"
+    percent = round(100 * docs.documented / docs.public_names)
+    return (
+        f"{docs.documented} of {docs.public_names} public "
+        f"{plural(docs.public_names, 'name')} ({percent}%)"
+    )
+
+
+def format_readme_map(readme) -> list[str]:
+    if readme is None:
+        return ["README: none found at the project root."]
+    path = printable(str(readme.path))
+    if not readme.checked:
+        reason = (
+            "too large or not text"
+            if readme.path.suffix.lower() in MARKDOWN_SUFFIXES
+            else "only Markdown READMEs are read"
+        )
+        return [f"{path}: not checked ({reason})."]
+
+    found = [
+        f"license ({printable(str(readme.license_file))} file)"
+        if section == "license" and readme.license_file is not None
+        else section
+        for section in readme.sections
+    ]
+    lines = [
+        f"{path}:",
+        f"  Sections found:    {', '.join(found) or 'none'}",
+        f"  Sections missing:  {', '.join(readme.missing_sections) or 'none'}",
+    ]
+    mentioned = readme.scripts_mentioned
+    if mentioned and not readme.scripts_checked:
+        lines.append(
+            "  npm scripts:       not checked (a package.json couldn't be read)"
+        )
+    elif readme.missing_scripts:
+        lines.append(
+            f"  npm scripts it runs that no package.json has "
+            f"({len(readme.missing_scripts)}):"
+        )
+        lines += [
+            f"    {printable(mention.command)}  (line {mention.line})"
+            for mention in readme.missing_scripts
+        ]
+    elif mentioned:
+        found_in = "found" if mentioned == 1 else "all found"
+        lines.append(
+            f"  npm scripts:       {mentioned} mentioned, {found_in} in package.json"
+        )
+    return lines

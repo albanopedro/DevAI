@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 7b: AI-generated tests).
+> **Status:** early development (Phase 8a: documentation gaps).
 
 ## Goal
 
@@ -252,6 +252,22 @@ devai test --file src/stats.py --ai --dry-run  # see what would be sent
 - **`--apply` creates the file after you type `y`, and never overwrites.** The file is created exclusively, so even one that appears at the last moment is kept. Missing folders (like `tests/`) are created and included in the undo command, e.g. `Undo with: rm tests/test_stats.py && rmdir tests`.
 - **DevAI never runs the generated tests.** It prints a run command it builds itself from your test framework (`pytest …`, `npx jest …`, `npx vitest run …`), never one copied from the AI. Tests are code: review them before you run them.
 
+### Finding missing documentation
+
+`devai docs` shows where documentation seems to be missing, locally and for free. Nothing is sent anywhere and nothing is executed.
+
+```bash
+devai docs                 # text report
+devai docs --format json   # for scripts
+```
+
+- **Python names without a docstring** (parsed with `ast`): the module itself, shown as `(module)`, public top-level functions and classes, and the public methods of public classes. Names starting with `_` are skipped, and so are private modules like `_internal.py`.
+- **JavaScript and TypeScript exports without JSDoc:** `export function`, `export default function`, `export class`, `export const f = () =>`, `module.exports = function`, `exports.f = ...`. Only a `/** ... */` block right above counts, because that's what editors show; a `//` comment doesn't. Exports are found by pattern, not parsed, so `export { a, b }` and `export const Button = memo(...)` are not seen.
+- **The README:** whether it has sections for installation, usage, tests and license, found by heading words in English or Portuguese (`Getting started`, `Instalação`, `Como usar`...). A `LICENSE` file counts as the license section.
+- **npm scripts the README runs that don't exist:** commands like `npm run <script>` or `pnpm run <script>`, and npm's `test` and `start` shortcuts, written in a code block or in inline code, whose script is in no `package.json` of the project. This one is a fact, not an estimate: that command fails. Prose isn't read, and Yarn and Bun are left out, because `yarn run` and `bun run` also run binaries and files.
+- **Test files are left out:** tests explain themselves through their names.
+- Always exits `0`: like `devai test`, it is a map. Not every name needs a docstring; use it to choose where to look.
+
 ### Proposing fixes
 
 `devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
@@ -387,6 +403,10 @@ src/devai/
 ├── testmap/          # `devai test`: where tests seem to be missing
 │   ├── pairing.py         # source ↔ test files by name words
 │   └── symbols.py         # public Python names no test mentions
+├── docmap/           # `devai docs`: where documentation seems to be missing
+│   ├── python_docs.py     # public Python names without a docstring (ast)
+│   ├── js_docs.py         # JS/TS exports without JSDoc (patterns)
+│   └── readme.py          # README sections and npm scripts that don't exist
 ├── testgen/          # `devai test --ai`: new test files proposed by AI
 │   ├── context.py         # what it may receive: the source and its existing tests
 │   ├── ai.py              # the task: prompt, consent question
@@ -425,7 +445,9 @@ tests/
 | 6b | Applying Fixes | `devai fix --apply`: diff first, explicit approval, clean-git and unchanged-file checks, atomic write; never commits |
 | 7a | Missing Tests | `devai test`: source files without a matching test, Python names no test mentions; an estimate, nothing executed |
 | 7b | Test Generation | `devai test --file X --ai`: a new test file, validated, created only after your "y", never overwriting, never run by DevAI |
-| 8 | Documentation | `devai docs` |
+| 8a | Documentation Gaps | `devai docs`: Python names without docstrings, JS/TS exports without JSDoc, README sections, npm scripts the README runs that don't exist; nothing sent |
+| 8b | AI Docstrings | `devai docs --file X --ai`: docstrings and JSDoc proposed by a free AI, applied only if the code itself is unchanged, after your "y" |
+| 8c | AI README | `devai docs --readme --ai`: README edits proposed by a free AI, with every command checked against the project |
 | 9 | Web Interface | FastAPI + React, Docker |
 | 10 | GitHub Integration | Repositories, pull requests, issues |
 | 11 | Agent System | Only if a real need appears |
