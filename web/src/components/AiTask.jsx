@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import AiResult from './AiResult.jsx';
+import AiResult, { GitHubLink } from './AiResult.jsx';
 
 /**
  * One AI task, in the same steps as the terminal:
@@ -114,7 +114,12 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
               onCancel={() => setStep('result')}
             />
           )}
-          {step === 'applied' && applied && (
+          {step === 'applied' && applied && applied.url !== undefined && (
+            <p className="done">
+              Posted on {applied.files.join(', ')}: <GitHubLink url={applied.url} />.
+            </p>
+          )}
+          {step === 'applied' && applied && applied.url === undefined && (
             <p className="done">
               Done: {applied.files.join(', ')}. Undo with: <code>{applied.undo}</code>. Nothing
               was committed.
@@ -144,11 +149,34 @@ function ApplyBox({ apply, step, onAsk, onConfirm, onCancel }) {
     );
   }
   if (step === 'result') {
+    const label = {
+      create: `Create ${files}…`,
+      comment: `Post as a comment on ${files}…`,
+    }[apply.kind] ?? `Apply to ${files}…`;
     return (
       <div className="apply">
         <button type="button" className="primary" onClick={onAsk}>
-          {apply.kind === 'create' ? `Create ${files}…` : `Apply to ${files}…`}
+          {label}
         </button>
+      </div>
+    );
+  }
+  if (apply.kind === 'comment') {
+    return (
+      <div className="apply confirm" role="alertdialog" aria-label="confirm">
+        <p>
+          Post this comment on {files} as <strong>{apply.account}</strong>? Everyone who can see it
+          on GitHub will see it. Mentions and #references are broken on purpose.
+        </p>
+        <pre className="code">{apply.preview}</pre>
+        <div className="actions">
+          <button type="button" className="primary" onClick={onConfirm} disabled={step === 'applying'}>
+            Yes, post it
+          </button>
+          <button type="button" onClick={onCancel} disabled={step === 'applying'}>
+            Cancel
+          </button>
+        </div>
       </div>
     );
   }

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createApi } from './api.js';
+import { GitHubLink } from './components/AiResult.jsx';
 import Docs from './views/Docs.jsx';
 import Fix from './views/Fix.jsx';
+import GitHub from './views/GitHub.jsx';
 import Overview from './views/Overview.jsx';
 import Review from './views/Review.jsx';
 import Tests from './views/Tests.jsx';
@@ -12,6 +14,7 @@ const TABS = [
   ['tests', 'Tests', Tests],
   ['docs', 'Docs', Docs],
   ['fix', 'Fix', Fix],
+  ['github', 'GitHub', GitHub],
 ];
 
 const PROVIDERS = [
@@ -85,10 +88,17 @@ export default function App({ token }) {
       {error && <p className="error">{error}</p>}
       {notice && (
         <div className="notice" role="status">
-          <span>
-            Written: {notice.files.join(', ')}. Undo with: <code>{notice.undo}</code>. Nothing was
-            committed.
-          </span>
+          {notice.url !== undefined ? (
+            <span>
+              Posted on GitHub: <GitHubLink url={notice.url} />. To remove it, delete the comment
+              there: DevAI can't.
+            </span>
+          ) : (
+            <span>
+              Written: {notice.files.join(', ')}. Undo with: <code>{notice.undo}</code>. Nothing
+              was committed.
+            </span>
+          )}
           <button type="button" onClick={() => setNotice(null)}>
             Dismiss
           </button>

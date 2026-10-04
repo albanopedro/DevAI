@@ -243,3 +243,39 @@ def readme_proposal_to_json(
             "diff": change.diff if change is not None else None,
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def pull_to_json(
+    pull, report: ReviewReport, ai: AIResult | None = None, discarded: int = 0
+) -> str:
+    """`devai pr` as JSON: the review's JSON, plus the pull request's facts."""
+    document = json.loads(review_to_json(report, ai, discarded))
+    document["pull_request"] = asdict(pull)
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def issue_to_json(issue, ai: AIResult | None = None, dropped: int = 0) -> str:
+    """`devai issue` as JSON: the issue, and the AI's plan if one was made."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "issue": asdict(issue),
+    }
+    if ai is not None:
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "plan": ai.report.model_dump(mode="json"),
+            "files_dropped": dropped,
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def github_list_to_json(kind: str, repo: str, items: list[dict]) -> str:
+    """`devai pulls` / `devai issues` as JSON."""
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        kind: {"repo": repo, "open": items},
+    }
+    return json.dumps(document, indent=2, ensure_ascii=False)

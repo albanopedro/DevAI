@@ -836,3 +836,109 @@ def format_readme_proposal(result: AIResult, plan, applying: bool = False) -> st
         "Written by AI. Read it before applying: instructions can be wrong.",
     ]
     return "\n".join(lines)
+
+
+MAX_ISSUE_LINES = 40  # of an issue's text shown in the terminal
+
+
+def format_pull_header(pull) -> str:
+    """A pull request's facts. Title and names come from anyone: printable()."""
+    draft = " (draft)" if pull.draft else ""
+    return "\n".join(
+        [
+            f"PULL REQUEST {printable(pull.repo)}#{pull.number}",
+            SEPARATOR,
+            f"Title:   {printable(pull.title)}",
+            f"Author:  {printable(pull.author)}",
+            f"Branch:  {printable(pull.base)} ← {printable(pull.head)}{draft}",
+            f"State:   {printable(pull.state)}",
+            f"URL:     {printable(pull.url)}",
+        ]
+    )
+
+
+def format_issue(issue) -> str:
+    """An issue, its text cut to MAX_ISSUE_LINES lines. All of it is untrusted."""
+    lines = [
+        f"ISSUE {printable(issue.repo)}#{issue.number}",
+        SEPARATOR,
+        f"Title:    {printable(issue.title)}",
+        f"Author:   {printable(issue.author)}",
+        f"Labels:   {printable(', '.join(issue.labels)) or 'none'}",
+        f"State:    {printable(issue.state)}",
+        f"Comments: {issue.total_comments}",
+        f"URL:      {printable(issue.url)}",
+        "",
+    ]
+    body = issue.body.strip().split("\n") if issue.body.strip() else []
+    lines += [printable(line) for line in body[:MAX_ISSUE_LINES]] or ["(no text)"]
+    if len(body) > MAX_ISSUE_LINES:
+        lines.append(f"… {len(body) - MAX_ISSUE_LINES} more lines on GitHub")
+    return "\n".join(lines)
+
+
+def format_issue_plan(result: AIResult, dropped: int = 0) -> str:
+    """The AI's plan for an issue. Model output: untrusted."""
+    plan = result.report
+    lines = [f"PLAN ({printable(result.model)})", SEPARATOR, "Summary:"]
+    lines += wrap(plan.summary, "  ")
+    lines += ["", "Files to look at:"]
+    lines += [
+        line
+        for file in plan.files
+        for line in wrap(f"{file.path}: {file.why}", "  - ", "    ")
+    ] or ["  none"]
+    if dropped:
+        lines.append(f"  ({dropped} file(s) the AI wasn't shown were left out)")
+    lines += ["", "Steps:"]
+    lines += [
+        line
+        for number, step in enumerate(plan.steps, start=1)
+        for line in wrap(step, f"  {number}. ", "     ")
+    ] or ["  none"]
+    for title, items in (("Tests:", plan.tests), ("Open questions:", plan.questions)):
+        if items:
+            lines += ["", title]
+            lines += [line for item in items for line in wrap(item, "  - ", "    ")]
+    usage = result.usage
+    lines += [
+        "",
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI. Check it against the issue and the code before acting.",
+    ]
+    return "\n".join(lines)
+
+
+def format_comment_preview(body: str, target: str, account: str) -> str:
+    """The exact text that would be posted, between separators."""
+    return "\n".join(
+        [
+            f"COMMENT TO POST on {printable(target)}, as {printable(account)}",
+            SEPARATOR,
+            *(printable(line) for line in body.split("\n")),
+            SEPARATOR,
+            "Mentions (@name) and references (#12) were broken on purpose: the "
+            "comment notifies no one.",
+        ]
+    )
+
+
+def format_github_list(kind: str, repo: str, items: list[dict]) -> str:
+    """Open pull requests or issues, one per line."""
+    title = "PULL REQUESTS" if kind == "pulls" else "ISSUES"
+    lines = [f"OPEN {title} ({printable(repo)})", SEPARATOR]
+    if not items:
+        lines.append("None open.")
+    for item in items:
+        extra = ""
+        if kind == "pulls":
+            extra = f"  [{printable(item['base'])} ← {printable(item['head'])}]"
+            extra += " (draft)" if item["draft"] else ""
+        elif item["labels"]:
+            extra = f"  [{printable(', '.join(item['labels']))}]"
+        lines += wrap(
+            f"#{item['number']}  {item['title']}  ({item['author']}){extra}",
+            "",
+            "      ",
+        )
+    return "\n".join(lines)

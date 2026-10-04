@@ -8,7 +8,7 @@ may read anything. Views are the same JSON as the CLI's --format json.
 import os
 import secrets
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,16 @@ from devai.ai.settings import SettingsError, load_settings
 from devai.analyzer import analyze_project
 from devai.checks import run_checks
 from devai.docmap import build_docs_map
-from devai.json_report import coverage_to_json, docs_to_json, review_to_json, to_json
+from devai.github.gh import GitHubError, local_repo
+from devai.github.issues import list_issues
+from devai.github.pulls import fetch_pull, fetch_pull_changes, list_pulls
+from devai.json_report import (
+    coverage_to_json,
+    docs_to_json,
+    pull_to_json,
+    review_to_json,
+    to_json,
+)
 from devai.review import ReviewError, collect_changes, review_report, run_review_checks
 from devai.testmap import build_coverage_map
 from devai.web import tasks
@@ -85,6 +94,7 @@ class PrepareBody(BaseModel):
     file: str | None = None
     files: list[str] = []
     ask: str | None = None
+    number: int | None = None  # a pull request or issue (D052)
 
 
 def web_dist() -> Path:
@@ -133,6 +143,33 @@ def create_app(
     @app.get("/api/projects")
     def list_projects() -> list[dict]:
         return [{"id": p.id, "name": p.name, "path": str(p.path)} for p in projects]
+
+    @app.get("/api/projects/{pid}/github")
+    def github(pid: int) -> dict:
+        """The project's open pull requests and issues, read through gh (D052)."""
+        root = project(pid).path
+        try:
+            return {
+                "repo": local_repo(root),
+                "pulls": list_pulls(root, None),
+                "issues": list_issues(root, None),
+                "error": None,
+            }
+        except GitHubError as problem:
+            return {"repo": None, "pulls": [], "issues": [], "error": str(problem)}
+
+    @app.get("/api/projects/{pid}/github/pulls/{number}")
+    def pull_review(pid: int, number: int) -> Response:
+        """A pull request's local checks: the JSON of `devai pr --format json`."""
+        root = project(pid).path
+        try:
+            pull = fetch_pull(root, number, None)
+            changes = fetch_pull_changes(root, pull)
+        except GitHubError as problem:
+            raise HTTPException(400, str(problem)) from None
+        checks = run_review_checks(changes)
+        report = replace(review_report(changes, checks), name=pull.repo)
+        return Response(pull_to_json(pull, report), media_type="application/json")
 
     @app.get("/api/projects/{pid}/{view}")
     def view(pid: int, view: str) -> Response:
@@ -191,6 +228,9 @@ def create_app(
                 "files": outcome.action.files,
                 "blocked": tasks.blocked(outcome),
             }
+            if outcome.action.kind == "comment":  # shown before the confirmation
+                answer["apply"]["preview"] = outcome.action.content
+                answer["apply"]["account"] = outcome.action.account
         return answer
 
     @app.post("/api/outcomes/{key}/apply")

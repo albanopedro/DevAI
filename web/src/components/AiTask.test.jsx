@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
+import { GitHubLink } from './AiResult.jsx';
 import AiTask from './AiTask.jsx';
 
 const PREVIEW = {
@@ -120,5 +121,62 @@ describe('AiTask', () => {
 
     expect(await screen.findByText(/Rejected by DevAI: the docs contain \*\//)).toBeTruthy();
     expect(screen.queryByText(/Apply to/)).toBeNull();
+  });
+});
+
+describe('GitHub comments', () => {
+  const REVIEW = {
+    task: 'pull',
+    result: {
+      pull_request: { number: 12, title: 'Add median', url: 'https://github.com/octo/stats/pull/12' },
+      ai: {
+        model: 'fake-model',
+        usage: { input_tokens: 5, output_tokens: 6 },
+        report: { summary: 'Adds median.', issues: [], suggested_tests: [], limitations: [] },
+        discarded_issues: 0,
+      },
+    },
+    apply: {
+      outcome_id: 'o2',
+      kind: 'comment',
+      files: ['octo/stats#12'],
+      blocked: null,
+      account: 'reviewer',
+      preview: '### DevAI review\n\n- No findings.',
+    },
+  };
+
+  test('the exact text and the account are shown before posting', async () => {
+    const api = fakeApi({
+      send: vi.fn(async () => REVIEW),
+      apply: vi.fn(async () => ({
+        applied: true,
+        files: ['octo/stats#12'],
+        url: 'https://github.com/octo/stats/pull/12#c1',
+        undo: null,
+      })),
+    });
+    render(<AiTask api={api} projectId={0} request={{ task: 'pull', number: 12 }} label="Review with AI…" />);
+
+    fireEvent.click(screen.getByText('Review with AI…'));
+    fireEvent.click(await screen.findByText('Send'));
+    fireEvent.click(await screen.findByText('Post as a comment on octo/stats#12…'));
+
+    expect(screen.getByText(/### DevAI review/)).toBeTruthy();
+    expect(screen.getByText('reviewer')).toBeTruthy();
+    expect(api.apply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Yes, post it'));
+    await screen.findByText(/Posted on octo\/stats#12/);
+    expect(api.apply).toHaveBeenCalledWith('o2');
+  });
+
+  test('links go only to GitHub', () => {
+    const { container, rerender } = render(<GitHubLink url="https://github.com/octo/stats/pull/1" />);
+    expect(container.querySelector('a').getAttribute('rel')).toContain('noreferrer');
+
+    rerender(<GitHubLink url="javascript:alert(1)" />);
+    expect(container.querySelector('a')).toBeNull();
+    expect(screen.getByText('javascript:alert(1)')).toBeTruthy();
   });
 });

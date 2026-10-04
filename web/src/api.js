@@ -56,6 +56,8 @@ export function createApi(token, fetchImpl = (...args) => fetch(...args)) {
   return {
     projects: () => call('GET', '/api/projects'),
     view: (projectId, view) => call('GET', `/api/projects/${projectId}/${view}`),
+    github: (projectId) => call('GET', `/api/projects/${projectId}/github`),
+    pull: (projectId, number) => call('GET', `/api/projects/${projectId}/github/pulls/${number}`),
     prepare: (projectId, request) => call('POST', `/api/projects/${projectId}/ai`, request),
     send: (preparedId) => call('POST', `/api/prepared/${encodeURIComponent(preparedId)}/send`),
     apply: (outcomeId) => call('POST', `/api/outcomes/${encodeURIComponent(outcomeId)}/apply`),

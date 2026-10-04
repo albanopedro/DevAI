@@ -46,6 +46,21 @@ export default function AiResult({ answer }) {
         />
       )}
       {task === 'fix' && <Fix proposal={ai.proposal} diffs={ai.diffs} />}
+      {task === 'pull' && (
+        <>
+          <p>
+            <strong>
+              #{result.pull_request.number} {result.pull_request.title}
+            </strong>{' '}
+            <GitHubLink url={result.pull_request.url} />
+          </p>
+          <Review report={ai.report} discarded={ai.discarded_issues} />
+        </>
+      )}
+      {task === 'issue' && <Plan plan={ai.plan} dropped={ai.files_dropped} />}
+      {result.comment_blocked && (
+        <p className="error">Can't offer it as a comment: {result.comment_blocked}.</p>
+      )}
       {task === 'tests' && <Tests ai={ai} runCommand={result.run_command} />}
       <List title="Notes from the AI" items={ai.proposal?.notes ?? []} />
       <p className="muted">Written by AI. Read it before applying anything.</p>
@@ -122,6 +137,40 @@ function Proposal({ diff, added = [], dropped = [], links = [], leftOut = [], ch
         items={leftOut.map((item) => `${item.topic}: ${item.reason}`)}
       />
     </>
+  );
+}
+
+function Plan({ plan, dropped }) {
+  return (
+    <>
+      <p>{plan.summary}</p>
+      <List title="Files to look at" items={plan.files.map((file) => `${file.path}: ${file.why}`)} />
+      {dropped > 0 && <p className="muted">{dropped} file(s) the AI wasn't shown were left out.</p>}
+      {plan.steps.length > 0 && (
+        <>
+          <h4>Steps</h4>
+          <ol>
+            {plan.steps.map((step, index) => (
+              <li key={index}>{step}</li>
+            ))}
+          </ol>
+        </>
+      )}
+      <List title="Tests" items={plan.tests} />
+      <List title="Open questions" items={plan.questions} />
+    </>
+  );
+}
+
+/** A link only to GitHub itself; any other address is shown as text. */
+export function GitHubLink({ url }) {
+  if (typeof url !== 'string' || !url.startsWith('https://github.com/')) {
+    return <code>{String(url ?? '')}</code>;
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer noopener">
+      {url}
+    </a>
   );
 }
 

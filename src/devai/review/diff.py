@@ -40,6 +40,9 @@ class Changes:
     )
     skipped: tuple[PurePosixPath, ...] = ()  # changed files whose content wasn't read
     range_args: tuple[str, ...] = ()  # the `git diff` arguments that selected them
+    # Changes that came as a patch (a pull request, D052): each readable file's
+    # diff. When set, git is never asked: the files aren't in this checkout.
+    patches: dict[PurePosixPath, str] | None = None
 
 
 def collect_changes(
@@ -253,6 +256,9 @@ def review_diff_lines(changes: Changes, file: ChangedFile) -> list[str] | None:
         if added is None:
             return None
         return [f"@@ -0,0 +1,{len(added)} @@"] + [f"+{line.text}" for line in added]
+    if changes.patches is not None:
+        patch = changes.patches.get(file.path)  # None: skipped by the privacy rules
+        return hunk_lines(patch) if patch is not None else None
     if not may_read(changes.root, file.path):
         return None
 

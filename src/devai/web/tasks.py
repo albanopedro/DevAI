@@ -12,6 +12,8 @@ terminal send the same context and get the same checks:
   D044 (writes) and D047 (new files) run again right before writing.
 
 The chat stays in the terminal: it asks for file approval at every question.
+GitHub tasks (D052-D054) read through `gh`; their "apply" posts one comment,
+whose exact text and account the page showed first.
 """
 
 import json
@@ -25,7 +27,7 @@ from devai.ai.result import AIRequest, AIResult, LLMClient
 from devai.ai.settings import AISettings
 from devai.analyzer import analyze_project
 from devai.analyzer.files import list_project_files
-from devai.chat.retrieval import ChatError, SelectedFile, extra_file
+from devai.chat.retrieval import ChatError, SelectedFile, extra_file, select_files
 from devai.checks import run_checks
 from devai.checks.secrets import read_scannable_text
 from devai.docgen.context import build_docs_context
@@ -35,10 +37,22 @@ from devai.docmap.python_docs import NotPython
 from devai.docmap.readme import MARKDOWN_SUFFIXES, find_readme, readme_map
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
 from devai.fix.edits import FileChange
+from devai.github.comment import CommentError, issue_comment, post, pull_comment
+from devai.github.gh import GitHubError, current_account
+from devai.github.issues import fetch_issue
+from devai.github.plan import (
+    build_issue_context,
+    ground_plan,
+    issue_question,
+    issue_request,
+)
+from devai.github.pulls import fetch_pull, fetch_pull_changes
 from devai.json_report import (
     doc_proposal_to_json,
     fix_to_json,
     generated_tests_to_json,
+    issue_to_json,
+    pull_to_json,
     readme_proposal_to_json,
     review_to_json,
     to_json,
@@ -52,8 +66,9 @@ from devai.testgen.create import run_command
 from devai.testmap import build_coverage_map
 from devai.testmap.pairing import covers, source_files, test_files
 
-TASKS = ("analysis", "review", "docs", "readme", "fix", "tests")
+TASKS = ("analysis", "review", "docs", "readme", "fix", "tests", "pull", "issue")
 MAX_REQUEST_CHARACTERS = 2_000  # what a fix request may say
+MAX_ISSUE_FILES = 3  # project files an issue plan may send, as in the CLI
 
 
 class TaskError(Exception):
@@ -64,16 +79,22 @@ class TaskError(Exception):
 class Action:
     """What applying an outcome would do."""
 
-    kind: str  # "write" (existing files, D044) or "create" (a new file, D047)
+    # "write" (existing files, D044), "create" (a new file, D047) or
+    # "comment" (one GitHub comment, D053)
+    kind: str
     changes: tuple[FileChange, ...] = ()  # write
     sources: tuple[SelectedFile, ...] = ()  # write: the files as they were read
     path: PurePosixPath | None = None  # create
-    content: str = ""  # create
+    content: str = ""  # create; comment: the exact text
+    target: tuple[str, str, int] | None = None  # comment: ("pr"|"issue", repo, n)
+    account: str = ""  # comment: who posts it
 
     @property
     def files(self) -> list[str]:
         if self.kind == "create":
             return [str(self.path)]
+        if self.kind == "comment" and self.target is not None:
+            return [f"{self.target[1]}#{self.target[2]}"]
         return [str(change.path) for change in self.changes]
 
 
@@ -121,12 +142,14 @@ def prepare(task: str, root: Path, settings: AISettings, params: dict) -> Prepar
         "readme": prepare_readme,
         "fix": prepare_fix,
         "tests": prepare_tests,
+        "pull": prepare_pull,
+        "issue": prepare_issue,
     }
     if task not in builders:
         raise TaskError(f"unknown task {task!r}; one of: {', '.join(TASKS)}")
     try:
         return builders[task](root, settings, params)
-    except ChatError as problem:  # a file that can't be sent (D039 rules)
+    except (ChatError, GitHubError) as problem:  # D039 file rules; gh's answers
         raise TaskError(str(problem)) from None
     except NotADirectoryError:
         raise TaskError(f"not a directory: {root}") from None
@@ -149,6 +172,13 @@ def apply(outcome: Outcome) -> dict[str, Any]:
     action = outcome.action
     if action is None:
         raise TaskError("there is nothing to apply")
+    if action.kind == "comment":
+        kind, repo, number = action.target
+        try:
+            url = post(outcome.root, kind, repo, number, action.content)
+        except GitHubError as problem:
+            raise TaskError(f"posting failed: {problem}") from None
+        return {"files": action.files, "url": url, "undo": None}
     if action.kind == "create":
         try:
             created = create_test_file(outcome.root, action.path, action.content)
@@ -169,7 +199,7 @@ def blocked(outcome: Outcome) -> str | None:
     from devai.fix.apply import ApplyError, check_can_apply
 
     action = outcome.action
-    if action is None:
+    if action is None or action.kind == "comment":
         return None
     if action.kind == "create":
         if (outcome.root / action.path).exists():
@@ -402,3 +432,77 @@ def required(params: dict, name: str) -> str:
     if len(value) > MAX_REQUEST_CHARACTERS:
         raise TaskError(f"{name!r} is too long")
     return value.strip()
+
+
+# --- GitHub (D052-D054) ---------------------------------------------------------------
+
+
+def prepare_pull(root: Path, settings: AISettings, params: dict) -> Prepared:
+    """An AI review of one of the project's own pull requests; apply = comment."""
+    from devai.review.ai import ground_issues, review_question, review_request
+
+    pull = fetch_pull(root, number(params), None)
+    changes = fetch_pull_changes(root, pull)
+    checks = run_review_checks(changes)
+    context = build_review_context(changes, checks)
+    if not context["diffs"]:
+        raise TaskError("the pull request has no code that can be sent for review")
+    report = replace(review_report(changes, checks), name=pull.repo)
+
+    def finish(prepared: Prepared, result: AIResult) -> Outcome:
+        issues, discarded = ground_issues(result.report, context)
+        grounded = replace(result, report=issues)
+        document = json.loads(pull_to_json(pull, report, grounded, discarded))
+        target = ("pr", pull.repo, pull.number)
+        action = comment_action(
+            root, lambda: pull_comment(report, grounded, discarded), target, document
+        )
+        return Outcome("pull", root, document, action)
+
+    question = review_question(context, settings)
+    return Prepared("pull", root, settings, context, question, review_request, finish)
+
+
+def prepare_issue(root: Path, settings: AISettings, params: dict) -> Prepared:
+    """A plan for one of the project's own issues; apply = comment."""
+    issue = fetch_issue(root, number(params), None)
+    info = analyze_project(root)
+    selection = select_files(
+        info.path, f"{issue.title}\n{issue.body}", limit=MAX_ISSUE_FILES
+    )
+    context = build_issue_context(issue, (info, run_checks(info), selection))
+
+    def finish(prepared: Prepared, result: AIResult) -> Outcome:
+        plan, dropped = ground_plan(result.report, context)
+        planned = replace(result, report=plan)
+        document = json.loads(issue_to_json(issue, planned, dropped))
+        target = ("issue", issue.repo, issue.number)
+        action = comment_action(root, lambda: issue_comment(planned), target, document)
+        return Outcome("issue", root, document, action)
+
+    question = issue_question(context, settings)
+    return Prepared("issue", root, settings, context, question, issue_request, finish)
+
+
+def comment_action(
+    root: Path, build: Callable[[], str], target: tuple, document: dict
+) -> Action | None:
+    """The comment to offer, with the account it would be posted as.
+
+    None, with the reason in document["comment_blocked"], when the text holds
+    something that looks like a secret or gh can't say who would post it.
+    """
+    try:
+        body = build()
+        account = current_account(root)
+    except (CommentError, GitHubError) as problem:
+        document["comment_blocked"] = str(problem)
+        return None
+    return Action("comment", content=body, target=target, account=account)
+
+
+def number(params: dict) -> int:
+    value = params.get("number")
+    if not isinstance(value, int) or value <= 0:
+        raise TaskError("'number' must be a pull request or issue number")
+    return value

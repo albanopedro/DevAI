@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from conftest import (
+    FAKE_SECRETS,
     fake_ai_report,
     fake_docs_proposal,
     fake_fix_proposal,
@@ -565,3 +566,190 @@ def test_serve_without_the_web_extra(tmp_path, capsys, monkeypatch):
 
     assert cli.main(["serve", str(tmp_path)]) == cli.EXIT_USAGE
     assert "pip install 'devai[web]'" in capsys.readouterr().err
+
+
+# --- GitHub (Phase 10): read through gh, post only after the click --------------------
+
+GH_REPO = "octo/stats"
+GH_PULL = {
+    "number": 12,
+    "title": "Add median",
+    "author": {"login": "contributor"},
+    "url": f"https://github.com/{GH_REPO}/pull/12",
+    "state": "OPEN",
+    "isDraft": False,
+    "baseRefName": "main",
+    "headRefName": "median",
+}
+GH_PATCH = """\
+diff --git a/stats.py b/stats.py
+index 1111111..2222222 100644
+--- a/stats.py
++++ b/stats.py
+@@ -4,3 +4,7 @@ def average(values):
+ 
+ def percent(part, whole):
+     return part / whole * 100
++
++
++def median(values):
++    return sorted(values)[len(values) // 2]
+"""
+GH_ISSUE = {
+    "number": 7,
+    "title": "average crashes on an empty list",
+    "author": {"login": "reporter"},
+    "url": f"https://github.com/{GH_REPO}/issues/7",
+    "state": "OPEN",
+    "labels": [{"name": "bug"}],
+    "body": "average([]) raises ZeroDivisionError.",
+    "comments": [],
+}
+
+
+@pytest.fixture
+def gh(fake_gh):
+    fake_gh.answer_json("repo", "view", data={"nameWithOwner": GH_REPO})
+    fake_gh.answer_json("pr", "view", data=GH_PULL)
+    fake_gh.answer("pr", "diff", stdout=GH_PATCH)
+    fake_gh.answer_json("issue", "view", data=GH_ISSUE)
+    fake_gh.answer("api", "user", stdout="reviewer\n")
+    fake_gh.answer("pr", "comment", stdout=f"https://github.com/{GH_REPO}/pull/12#c1\n")
+    fake_gh.answer(
+        "issue", "comment", stdout=f"https://github.com/{GH_REPO}/issues/7#c2\n"
+    )
+    return fake_gh
+
+
+def review_issue(**fields):
+    from devai.review.schema import ReviewIssue
+
+    values = dict(
+        file="stats.py",
+        line=10,
+        severity="medium",
+        category="bug",
+        title="Empty list",
+        explanation="median([]) raises IndexError, cc @someone.",
+        suggestion="Raise a ValueError with a clear message.",
+    )
+    return ReviewIssue(**(values | fields))
+
+
+def test_github_lists_open_pulls_and_issues(repo, gh):
+    gh.answer_json("pr", "list", data=[GH_PULL])
+    gh.answer_json("issue", "list", data=[GH_ISSUE])
+
+    data = web(repo).get("/api/projects/0/github").json()
+
+    assert data["repo"] == GH_REPO
+    assert data["error"] is None
+    assert [(p["number"], p["author"]) for p in data["pulls"]] == [(12, "contributor")]
+    assert [(i["number"], i["labels"]) for i in data["issues"]] == [(7, ["bug"])]
+
+
+def test_github_problems_are_shown_not_raised(repo, gh):
+    gh.answer("pr", "list", code=1, stderr="please run: gh auth login")
+
+    data = web(repo).get("/api/projects/0/github").json()
+
+    assert data["error"] == "gh isn't logged in to GitHub: run `gh auth login`"
+    assert data["pulls"] == []
+
+
+def test_a_pull_requests_local_checks(repo, gh):
+    data = web(repo).get("/api/projects/0/github/pulls/12").json()
+
+    assert data["pull_request"]["repo"] == GH_REPO
+    assert data["review"]["name"] == GH_REPO
+    assert [file["path"] for file in data["review"]["files"]] == ["stats.py"]
+    assert "ai" not in data
+
+
+def test_a_review_is_posted_only_after_the_click(repo, gh, fake):
+    fake.answers(fake_review_report(issues=[review_issue()]))
+    client = web(repo)
+
+    prepared = prepare(client, task="pull", number=12).json()
+    assert prepared["question"].startswith("Send the changed code of 1 file")
+    answer = client.post(f"/api/prepared/{prepared['prepared_id']}/send").json()
+
+    apply = answer["apply"]
+    assert apply["kind"] == "comment"
+    assert apply["files"] == [f"{GH_REPO}#12"]
+    assert apply["account"] == "reviewer"
+    assert "### DevAI review" in apply["preview"]
+    assert "@⁠someone" in apply["preview"]  # the mention notifies no one
+    assert gh.posted() == []  # shown, not posted
+
+    done = client.post(f"/api/outcomes/{apply['outcome_id']}/apply").json()
+
+    [(args, text)] = gh.posted()
+    assert args == ["pr", "comment", "12", "--repo", GH_REPO, "--body-file", "-"]
+    assert text == apply["preview"]  # exactly what the page showed
+    assert done == {
+        "applied": True,
+        "files": [f"{GH_REPO}#12"],
+        "url": f"https://github.com/{GH_REPO}/pull/12#c1",
+        "undo": None,
+    }
+    again = client.post(f"/api/outcomes/{apply['outcome_id']}/apply")
+    assert again.status_code == 404
+    assert len(gh.posted()) == 1
+
+
+def test_a_comment_that_looks_like_a_secret_isnt_offered(repo, gh, fake):
+    secret = FAKE_SECRETS["secret/github-token"][0]
+    report = fake_review_report(issues=[review_issue(suggestion=f"Use {secret}")])
+    fake.answers(report)
+    client = web(repo)
+    prepared = prepare(client, task="pull", number=12).json()
+
+    answer = client.post(f"/api/prepared/{prepared['prepared_id']}/send").json()
+
+    assert "apply" not in answer
+    assert "possible secret" in answer["result"]["comment_blocked"]
+    assert gh.posted() == []
+
+
+def test_an_issue_plan_is_posted_after_the_click(repo, gh, fake):
+    from devai.github.schema import IssuePlan, PlanFile
+
+    fake.answers(
+        IssuePlan(
+            summary="average() fails on an empty list.",
+            files=[
+                PlanFile(path="stats.py", why="average lives here"),
+                PlanFile(path="invented.py", why="never sent"),
+            ],
+            steps=["Raise ValueError for an empty list."],
+            tests=["median([]) raises ValueError."],
+            questions=[],
+        )
+    )
+    client = web(repo)
+    prepared = prepare(client, task="issue", number=7).json()
+
+    assert [file["path"] for file in prepared["context"]["files"]] == ["stats.py"]
+    answer = client.post(f"/api/prepared/{prepared['prepared_id']}/send").json()
+
+    plan = answer["result"]["ai"]["plan"]
+    assert [file["path"] for file in plan["files"]] == ["stats.py"]
+    assert answer["result"]["ai"]["files_dropped"] == 1
+    client.post(f"/api/outcomes/{answer['apply']['outcome_id']}/apply")
+    [(args, text)] = gh.posted()
+    assert args[:3] == ["issue", "comment", "7"]
+    assert text.startswith("### DevAI plan")
+
+
+@pytest.mark.parametrize("number", [None, 0, -3])
+def test_github_tasks_need_a_number(repo, gh, fake, number):
+    response = prepare(web(repo), task="pull", number=number)
+
+    assert response.status_code == 400
+    assert "number" in response.json()["detail"]
+    assert gh.calls == []  # refused before asking GitHub
+
+
+def test_a_number_that_isnt_one(repo, gh, fake):
+    assert prepare(web(repo), task="pull", number="twelve").status_code == 422

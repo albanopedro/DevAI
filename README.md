@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 9: web interface).
+> **Status:** early development (Phase 10: GitHub integration).
 
 ## Goal
 
@@ -225,6 +225,26 @@ What would be sent:
 - Redaction covers added, removed **and** context lines, and applies the broad credential rule even in test files: hiding a line costs little, sending a secret can't be undone.
 - Limits: 20 files with hunks, 200 lines per file, about 20,000 characters in total. Every changed file stays listed with the reason its code isn't included (`deleted`, `not read (privacy or size rules)`, `not included (size limit)`), and cuts are recorded under `truncated`.
 - Code comes from the reviewed project and is untrusted: a comment saying "ignore your instructions" is data. `<` is escaped, so nothing in the code can close the prompt's delimiter.
+
+### GitHub: pull requests and issues
+
+DevAI reads GitHub through your GitHub CLI (`gh`, free: install it and run `gh auth login` once). DevAI never sees a token, and it may run only the gh commands it needs: it never merges, closes, approves or creates anything.
+
+```bash
+devai pulls                    # open pull requests of this project's repository
+devai pr 12                    # review pull request #12: local checks, no checkout
+devai pr 12 --ai               # also a free AI review of its diff
+devai pr 12 --ai --comment     # post the review as one comment, after your "y"
+devai issues                   # open issues
+devai issue 7 --ai             # a plan: files to look at, steps, tests, questions
+devai issue 7 --ai --comment   # post the plan as one comment, after your "y"
+devai pr 406 --repo pallets/itsdangerous   # any repository you can read
+```
+
+- **No checkout, nothing run.** The pull request's diff comes from GitHub and goes through the same checks as `devai review`: secrets in added lines, `.env` files, tests, debug statements, size. Its `.env`, lock, minified and binary files are never read, and its text and code are data, never instructions for the AI. A test checks that a pull request and a local review of the same change give the same findings.
+- **Issue plans** send the issue (title, text and its latest 5 comments, redacted) and, only for this project's own issues, the project summary and up to 3 files found by a local keyword search (or named with `--file`). Files in the answer are kept only if they were sent.
+- **Comments are posted only after you read them.** DevAI shows the exact text and the account it will be posted as (asked to GitHub), then asks `[y/N]` in a terminal; `--yes` never posts. Mentions (`@name`) and references (`#12`) are broken with an invisible character, so a comment notifies no one, and a comment that looks like it holds a secret is refused. To remove a comment, delete it on GitHub: DevAI can't.
+- In the web interface, the GitHub tab lists the open pull requests and issues, with *Check*, *Review with AI* and *Plan with AI*; posting asks for a confirmation that shows the full text.
 
 ### Asking about a project (chat)
 
@@ -485,6 +505,13 @@ src/devai/
 │   ├── schema.py          # GeneratedTests: path, content, covers, notes
 │   ├── validate.py        # path, name, language and content rules
 │   └── create.py          # exclusive creation, undo and run commands
+├── github/           # `devai pr`, `devai issue`: GitHub through the gh CLI
+│   ├── gh.py              # runs gh: only the allowed commands, no prompts
+│   ├── pulls.py           # pull request facts; its diff → the review's Changes
+│   ├── issues.py          # issues and their latest comments
+│   ├── plan.py            # the issue plan: context, prompt, grounding
+│   ├── schema.py          # IssuePlan: summary, files, steps, tests, questions
+│   └── comment.py         # comment text (mentions broken, secrets refused); posting
 ├── web/              # `devai serve`: the local API (FastAPI)
 │   ├── app.py             # routes, the locks, the built pages
 │   ├── security.py        # token, Host and Origin checks, security headers
@@ -532,7 +559,7 @@ Dockerfile, compose.yaml  # the container: pages built with Node, DevAI with [ai
 | 8b | AI Docstrings | `devai docs --file X --ai`: docstrings and JSDoc proposed by a free AI, applied only if the code itself is unchanged, after your "y" |
 | 8c | AI README | `devai docs --readme --ai`: missing README sections written by a free AI and added without editing a line, with every command checked against the project |
 | 9 | Web Interface | `devai serve`: a local API (FastAPI; 127.0.0.1, token, Host and Origin checks), React pages, AI tasks with a preview before sending and a confirmation before writing, Docker |
-| 10 | GitHub Integration | Repositories, pull requests, issues |
+| 10 | GitHub Integration | `devai pr`, `devai issue`, through the `gh` CLI: pull requests reviewed without a checkout, issue plans, comments posted only after your "y"; never merges, closes or creates anything |
 | 11 | Agent System | Only if a real need appears |
 
 The roadmap changes as the project teaches us things. Design decisions are recorded in [docs/decisions.md](docs/decisions.md).

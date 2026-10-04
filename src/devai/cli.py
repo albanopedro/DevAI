@@ -29,6 +29,9 @@ from devai.json_report import (
     docs_to_json,
     fix_to_json,
     generated_tests_to_json,
+    github_list_to_json,
+    issue_to_json,
+    pull_to_json,
     readme_proposal_to_json,
     review_to_json,
     to_json,
@@ -46,6 +49,7 @@ from devai.report import (
     format_ai_section,
     format_chat_answer,
     format_chat_header,
+    format_comment_preview,
     format_coverage_map,
     format_doc_proposal,
     format_docs_header,
@@ -54,7 +58,11 @@ from devai.report import (
     format_fix_header,
     format_fix_proposal,
     format_generated_tests,
+    format_github_list,
+    format_issue,
+    format_issue_plan,
     format_nothing_to_document,
+    format_pull_header,
     format_readme_complete,
     format_readme_header,
     format_readme_proposal,
@@ -84,6 +92,8 @@ EXIT_FINDINGS = 1  # findings at or above the --fail-on level
 EXIT_USAGE = 2  # no command, bad path or invalid argument (argparse uses 2 too)
 EXIT_AI_ERROR = 3  # the AI step failed; the deterministic report was still printed
 
+MAX_ISSUE_FILES = 3  # project files an issue plan may send
+
 FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 
 # Shown on stderr while the model works, per AI task.
@@ -91,6 +101,7 @@ PROGRESS = {
     "tests": "Asking {model} for tests…",
     "docs": "Asking {model} for docs…",
     "readme": "Asking {model} for README sections…",
+    "issue": "Asking {model} for a plan…",
     "fix": "Asking {model} for a fix…",
     "analysis": "Analyzing with {model}…",
     "review": "Reviewing with {model}…",
@@ -101,6 +112,7 @@ LOCAL_PROGRESS = {
     "docs": "Asking {model} for docs locally (nothing leaves this machine)…",
     "readme": "Asking {model} for README sections locally "
     "(nothing leaves this machine)…",
+    "issue": "Asking {model} for a plan locally (nothing leaves this machine)…",
     "fix": "Asking {model} for a fix locally (nothing leaves this machine)…",
     "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
     "review": "Reviewing locally with {model} (nothing leaves this machine)…",
@@ -326,6 +338,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(docs)
 
+    pr = subparsers.add_parser(
+        "pr", help="review a GitHub pull request, without checking it out"
+    )
+    pr.add_argument("number", type=int, help="the pull request's number")
+    add_github_options(pr)
+    pr.add_argument(
+        "--ai", action="store_true", help="also ask a free AI to review its diff"
+    )
+    pr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --ai: show exactly what would be sent, without sending it",
+    )
+    pr.add_argument(
+        "--comment",
+        action="store_true",
+        help="post the review as one comment, after you read it and type y "
+        "(needs a terminal; --yes never posts)",
+    )
+    add_ai_send_options(pr)
+
+    issue = subparsers.add_parser(
+        "issue", help="show a GitHub issue; with --ai, plan the work for it"
+    )
+    issue.add_argument("number", type=int, help="the issue's number")
+    add_github_options(issue)
+    issue.add_argument(
+        "--ai", action="store_true", help="ask a free AI for a plan (files, steps)"
+    )
+    issue.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="with --ai: also send this project file (repeatable, up to 3)",
+    )
+    issue.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --ai: show exactly what would be sent, without sending it",
+    )
+    issue.add_argument(
+        "--comment",
+        action="store_true",
+        help="with --ai: post the plan as one comment, after you read it and "
+        "type y (needs a terminal; --yes never posts)",
+    )
+    add_ai_send_options(issue)
+
+    for kind, help_text in (
+        ("pulls", "list the open pull requests on GitHub"),
+        ("issues", "list the open issues on GitHub"),
+    ):
+        listing = subparsers.add_parser(kind, help=help_text)
+        add_github_options(listing)
+
     serve = subparsers.add_parser(
         "serve",
         help="open the web interface for these projects (this computer only)",
@@ -366,6 +434,25 @@ def add_ai_send_options(command: argparse.ArgumentParser) -> None:
     )
 
 
+def add_github_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="the local project (default: current directory); its GitHub "
+        "repository is used unless --repo names another",
+    )
+    command.add_argument(
+        "--repo", metavar="OWNER/NAME", help="the GitHub repository (default: path's)"
+    )
+    command.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="output format (default: text)",
+    )
+
+
 def add_output_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--format",
@@ -402,6 +489,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_docs(args)
     if args.command == "serve":
         return run_serve(args)
+    if args.command == "pr":
+        return run_pr(args)
+    if args.command == "issue":
+        return run_issue(args)
+    if args.command in ("pulls", "issues"):
+        return run_github_list(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -860,6 +953,222 @@ def create_tests(root: Path, path, content: str, command: str) -> int:
         print_error(str(problem))
         return EXIT_USAGE
     print(format_tests_created(path, undo_command(path, created), command))
+    return EXIT_OK
+
+
+def github_usage_error(args: argparse.Namespace) -> str | None:
+    """Why the options of `devai pr` / `devai issue` don't fit together, or None."""
+    if args.dry_run and not args.ai:
+        return "--dry-run requires --ai"
+    if getattr(args, "file", None) and not args.ai:
+        return "--file requires --ai"
+    if args.command == "issue" and args.comment and not args.ai:
+        return "--comment posts the AI's plan: it requires --ai"
+    if args.comment and (args.dry_run or args.format == "json"):
+        return "--comment can't be combined with --dry-run or --format json"
+    if args.comment and not is_interactive():
+        return "--comment needs a terminal: you read and approve every comment yourself"
+    if not Path(args.path).is_dir():
+        return f"not a directory: {args.path}"
+    return None
+
+
+def run_pr(args: argparse.Namespace) -> int:
+    """Review a pull request like local changes (D052); comment only after y (D053)."""
+    from devai.github.gh import GitHubError
+    from devai.github.pulls import fetch_pull, fetch_pull_changes
+
+    problem = github_usage_error(args)
+    if problem:
+        print_error(problem)
+        return EXIT_USAGE
+    root = Path(args.path).resolve()
+    try:
+        pull = fetch_pull(root, args.number, args.repo)
+        changes = fetch_pull_changes(root, pull)
+    except GitHubError as error:
+        print_error(str(error))
+        return EXIT_USAGE
+
+    checks = run_review_checks(changes)
+    report = replace(review_report(changes, checks), name=pull.repo)
+    if args.ai and args.dry_run:
+        print(format_review_ai_preview(changes, checks, args.format))
+        return EXIT_OK
+    ai: tuple[LLMClient, AISettings] | None = None
+    if args.ai:
+        try:
+            ai = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        except (SettingsError, SetupError) as error:
+            print_error(str(error))
+            return EXIT_USAGE
+
+    ai_result, discarded, failed = None, 0, False
+    if args.format == "json":
+        if ai:
+            ai_result, discarded, failed = review_with_ai(
+                *ai, changes, checks, args.yes
+            )
+        print(pull_to_json(pull, report, ai_result, discarded))
+        return EXIT_AI_ERROR if failed else EXIT_OK
+
+    print(format_pull_header(pull))
+    print()
+    print(format_review(report), flush=True)
+    if ai:
+        ai_result, discarded, failed = review_with_ai(*ai, changes, checks, args.yes)
+    if ai_result:
+        print()
+        print(format_ai_review_section(ai_result, discarded))
+    if failed:
+        return EXIT_AI_ERROR
+    if args.comment:
+        from devai.github.comment import pull_comment
+
+        def build() -> str:
+            return pull_comment(report, ai_result, discarded)
+
+        return post_after_yes(root, "pr", pull.repo, pull.number, build)
+    return EXIT_OK
+
+
+def run_issue(args: argparse.Namespace) -> int:
+    """Show an issue; with --ai, plan it (D054); comment only after y (D053)."""
+    from devai.github.gh import GitHubError, local_repo
+    from devai.github.issues import fetch_issue
+    from devai.github.plan import build_issue_context, ground_plan, issue_question
+
+    problem = github_usage_error(args)
+    if problem:
+        print_error(problem)
+        return EXIT_USAGE
+    if len(args.file) > MAX_ISSUE_FILES:
+        print_error(f"an issue plan may send at most {MAX_ISSUE_FILES} files (--file)")
+        return EXIT_USAGE
+    root = Path(args.path).resolve()
+    try:
+        issue = fetch_issue(root, args.number, args.repo)
+    except GitHubError as error:
+        print_error(str(error))
+        return EXIT_USAGE
+    if not args.ai:
+        print(issue_to_json(issue) if args.format == "json" else format_issue(issue))
+        return EXIT_OK
+
+    local = None
+    own = local_repo(root)
+    if own is not None and own.lower() == issue.repo.lower():
+        info = analyze_project(root)
+        question = f"{issue.title}\n{issue.body}"
+        try:
+            selection = select_files(
+                info.path, question, tuple(args.file), limit=MAX_ISSUE_FILES
+            )
+        except ChatError as error:
+            print_error(str(error))
+            return EXIT_USAGE
+        local = (info, run_checks(info), selection)
+    elif args.file:
+        print_error(
+            f"--file sends this project's files, but the issue is from {issue.repo}"
+        )
+        return EXIT_USAGE
+    context = build_issue_context(issue, local)
+    if args.dry_run:
+        print(format_issue_preview(context, args.format))
+        return EXIT_OK
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.github.plan import issue_request  # needs the [ai] extra
+    except (SettingsError, SetupError) as error:
+        print_error(str(error))
+        return EXIT_USAGE
+    if args.format == "text":
+        print(format_issue(issue), flush=True)
+    result, failed = run_ai(
+        client,
+        settings,
+        issue_request(context),
+        issue_question(context, settings),
+        args.yes,
+        task="issue",
+    )
+    if failed:
+        return EXIT_AI_ERROR
+    if result is None:
+        return EXIT_OK  # declined: nothing was sent
+    plan, dropped = ground_plan(result.report, context)
+    result = replace(result, report=plan)
+    if args.format == "json":
+        print(issue_to_json(issue, result, dropped))
+        return EXIT_OK
+    print()
+    print(format_issue_plan(result, dropped), flush=True)
+    if args.comment:
+        from devai.github.comment import issue_comment
+
+        return post_after_yes(
+            root, "issue", issue.repo, issue.number, lambda: issue_comment(result)
+        )
+    return EXIT_OK
+
+
+def run_github_list(args: argparse.Namespace) -> int:
+    """The open pull requests or issues: names and numbers only."""
+    from devai.github.gh import GitHubError, local_repo
+    from devai.github.issues import list_issues
+    from devai.github.pulls import list_pulls
+
+    if not Path(args.path).is_dir():
+        print_error(f"not a directory: {args.path}")
+        return EXIT_USAGE
+    root = Path(args.path).resolve()
+    listing = list_pulls if args.command == "pulls" else list_issues
+    try:
+        items = listing(root, args.repo)
+    except GitHubError as error:
+        print_error(str(error))
+        return EXIT_USAGE
+    repo = args.repo or local_repo(root) or root.name
+    if args.format == "json":
+        print(github_list_to_json(args.command, repo, items))
+    else:
+        print(format_github_list(args.command, repo, items))
+    return EXIT_OK
+
+
+def post_after_yes(root: Path, kind: str, repo: str, number: int, build) -> int:
+    """Show the exact comment and the account, ask, and post only after "y" (D053)."""
+    from devai.github.comment import CommentError, post
+    from devai.github.gh import GitHubError, current_account
+
+    try:
+        body = build()
+        account = current_account(root)
+    except (CommentError, GitHubError) as error:
+        print_error(f"the comment can't be posted: {error}")
+        return EXIT_USAGE
+    target = f"{repo}#{number}"
+    print()
+    print(format_comment_preview(body, target, account), flush=True)
+    print(
+        f"\nPost this comment on {target} as {account}? Everyone who can see "
+        f"the {'pull request' if kind == 'pr' else 'issue'} will see it. [y/N] ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
+    if sys.stdin.readline().strip().lower() not in {"y", "yes"}:
+        print("Not posted. Nothing was sent to GitHub.")
+        return EXIT_OK
+    try:
+        url = post(root, kind, repo, number, body)
+    except GitHubError as error:
+        print_error(f"posting failed: {error}")
+        return EXIT_USAGE
+    print(f"Posted: {url or target}")
+    print("To remove it, delete the comment on GitHub: DevAI can't.")
     return EXIT_OK
 
 
@@ -1404,6 +1713,28 @@ def format_readme_preview(context: dict, output_format: str) -> str:
         SEPARATOR,
         f"README:  {sent}",
         f"Topics:  {', '.join(context['topics'])}",
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def format_issue_preview(context: dict, output_format: str) -> str:
+    """Show what an issue plan would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+    compact = serialize_context(context)
+    issue = context["issue"]
+    files = [file["path"] for file in context["files"]]
+    lines = [
+        "AI ISSUE CONTEXT PREVIEW (dry run: nothing was sent)",
+        SEPARATOR,
+        f"Issue:  {printable(issue['repo'])}#{issue['number']}",
+        f"Files:  {printable(', '.join(files)) or 'none'}",
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),
         SEPARATOR,

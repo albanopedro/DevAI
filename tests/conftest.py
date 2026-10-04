@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +27,8 @@ if importlib.util.find_spec("pydantic") is None:
 # The web interface needs the optional [web] extra (FastAPI).
 if importlib.util.find_spec("fastapi") is None:
     collect_ignore.append("test_web.py")
+if importlib.util.find_spec("pydantic") is None:
+    collect_ignore.append("test_github_ai.py")
 
 
 def make_files(root: Path, *relative_paths: str) -> None:
@@ -242,3 +245,44 @@ def fake_readme_proposal(sections=None, description="", **overrides):
         notes=["Assumes Node.js is installed."],
     )
     return ReadmeProposal(**(fields | overrides))
+
+
+class FakeGh:
+    """Stands in for the GitHub CLI: canned answers, every call recorded.
+
+    Only "gh" commands are faked; git and the rest run for real. An unexpected
+    gh command fails the test, so no test can reach GitHub.
+    """
+
+    def __init__(self, real_run):
+        self.real_run = real_run
+        self.calls = []  # (args, stdin)
+        self.answers = {}  # args prefix → (stdout, exit code, stderr)
+
+    def answer(self, *prefix, stdout="", code=0, stderr=""):
+        self.answers[prefix] = (stdout, code, stderr)
+
+    def answer_json(self, *prefix, data):
+        self.answer(*prefix, stdout=json.dumps(data))
+
+    def __call__(self, command, *args, **kwargs):
+        if command[0] != "gh":
+            return self.real_run(command, *args, **kwargs)
+        gh_args = list(command[1:])
+        self.calls.append((gh_args, kwargs.get("input")))
+        for prefix in sorted(self.answers, key=len, reverse=True):
+            if tuple(gh_args[: len(prefix)]) == prefix:
+                stdout, code, stderr = self.answers[prefix]
+                return subprocess.CompletedProcess(command, code, stdout, stderr)
+        raise AssertionError(f"unexpected gh call: {gh_args}")
+
+    def posted(self):
+        """The comments that would have been posted: (args, text)."""
+        return [(args, text) for args, text in self.calls if args[1:2] == ["comment"]]
+
+
+@pytest.fixture
+def fake_gh(monkeypatch):
+    fake = FakeGh(subprocess.run)
+    monkeypatch.setattr(subprocess, "run", fake)
+    return fake
