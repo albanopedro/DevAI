@@ -12,6 +12,7 @@ from conftest import (
     fake_docs_proposal,
     fake_fix_proposal,
     fake_generated_tests,
+    fake_readme_proposal,
     fake_review_report,
     git_commit,
     git_run,
@@ -1804,7 +1805,6 @@ def test_docs_for_a_documented_file_need_no_ai_call(docs_repo, capsys, fake_docs
     [
         (["--file", "stats.py"], "--file requires --ai"),
         (["--apply"], "--apply requires --ai"),
-        (["--ai"], "--ai needs the file to document: --file PATH"),
         (["--ai", "--file", "README.md"], "Python, JavaScript or TypeScript"),
         (["--ai", "--file", "tests/test_stats.py"], "not tests or config files"),
         (["--ai", "--file", "broken.py"], "broken.py isn't valid Python"),
@@ -1820,3 +1820,232 @@ def test_docs_usage_errors(docs_repo, capsys, fake_docs_ai, args, message):
 
     assert message in capsys.readouterr().err
     assert fake_docs_ai.requests == []
+
+
+# --- docs --readme --ai (Phase 8c): sections added, commands checked ------------------
+
+STATS_README = "# Stats\n\nTiny stats helpers.\n\n## License\n\nMIT\n"
+COMPLETE_README = (
+    "# Stats\n"
+    "\n"
+    "Tiny stats helpers.\n"
+    "\n"
+    "## Installation\n"
+    "\n"
+    "```bash\n"
+    "npm install\n"
+    "```\n"
+    "\n"
+    "## Usage\n"
+    "\n"
+    "```bash\n"
+    "npm run dev\n"
+    "```\n"
+    "\n"
+    "## Running tests\n"
+    "\n"
+    "```bash\n"
+    "npm test\n"
+    "```\n"
+    "\n"
+    "## License\n"
+    "\n"
+    "MIT\n"
+)
+
+
+@pytest.fixture
+def readme_repo(git_repo):
+    write(git_repo, "README.md", STATS_README)
+    write(git_repo, "package.json", '{"scripts": {"dev": "vite", "test": "vitest"}}')
+    write(git_repo, "stats.js", "export function mean(values) {}\n")
+    write(git_repo, "tests/stats.test.js", "test('mean', () => {});\n")
+    git_commit(git_repo, "fixture")
+    return git_repo
+
+
+@pytest.fixture
+def fake_readme_ai(fake_ai):
+    fake_ai.result = AIResult(fake_readme_proposal(), "fake-model", AIUsage(60, 70))
+    return fake_ai
+
+
+def write_readme(repo, *extra):
+    return main(["docs", str(repo), "--readme", "--ai", "--yes", *extra])
+
+
+def test_readme_sections_are_shown_and_nothing_is_written(
+    readme_repo, capsys, fake_readme_ai
+):
+    before = snapshot(readme_repo)
+
+    assert write_readme(readme_repo) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "README:   README.md\nTopics:   installation, usage, tests" in out
+    assert "+## Installation" in out
+    assert (
+        "Added:  Installation (installation), Usage (usage), Running tests (tests)"
+        in out
+    )
+    assert "Only additions: checked." in out
+    assert "To write these sections, run again with --apply." in out
+    assert snapshot(readme_repo) == before
+    sent = fake_readme_ai.contexts[0]
+    assert sent["topics"] == ["installation", "usage", "tests"]
+    scripts = sent["scripts"]["package.json"]["scripts"]
+    assert scripts == {"dev": "vite", "test": "vitest"}
+    assert "export function mean" not in json.dumps(sent)  # no source code
+
+
+def test_readme_sends_the_same_context_as_the_dry_run(
+    readme_repo, capsys, fake_readme_ai
+):
+    args = ["docs", str(readme_repo), "--readme", "--ai", "--dry-run"]
+    main([*args, "--format", "json"])
+    previewed = json.loads(capsys.readouterr().out)
+
+    write_readme(readme_repo)
+
+    assert fake_readme_ai.contexts == [previewed]
+
+
+def test_readme_apply_writes_after_yes(
+    readme_repo, capsys, fake_readme_ai, monkeypatch
+):
+    before_git = git_state(readme_repo)
+    answer(monkeypatch, "y\n")
+
+    assert write_readme(readme_repo, "--apply") == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "Apply these sections to 1 file (README.md)? [y/N]" in captured.err
+    assert "Undo with: git restore README.md" in captured.out
+    assert (readme_repo / "README.md").read_text() == COMPLETE_README
+    assert git_state(readme_repo) == before_git
+
+
+def test_readme_apply_writes_nothing_without_yes(
+    readme_repo, capsys, fake_readme_ai, monkeypatch
+):
+    before = snapshot(readme_repo)
+    answer(monkeypatch, "n\n")
+
+    assert write_readme(readme_repo, "--apply") == EXIT_OK
+
+    assert "Not applied. Nothing was changed." in capsys.readouterr().out
+    assert snapshot(readme_repo) == before
+
+
+def test_readme_apply_refuses_uncommitted_changes_before_any_ai_call(
+    readme_repo, capsys, fake_readme_ai, monkeypatch
+):
+    write(readme_repo, "README.md", STATS_README + "\nDraft.\n")
+    answer(monkeypatch, "y\n")
+
+    assert write_readme(readme_repo, "--apply") == EXIT_USAGE
+
+    assert "uncommitted changes" in capsys.readouterr().err
+    assert fake_readme_ai.requests == []
+
+
+def test_a_new_readme_is_created_after_yes(git_repo, capsys, fake_ai, monkeypatch):
+    write(git_repo, "package.json", '{"scripts": {"dev": "vite"}}')
+    write(git_repo, "stats.js", "export function mean(values) {}\n")
+    git_commit(git_repo, "no readme")
+    sections = [("usage", "Usage", "```bash\nnpm run dev\n```")]
+    proposal = fake_readme_proposal(sections, description="Tiny stats helpers.")
+    fake_ai.result = AIResult(proposal, "fake-model", AIUsage(1, 1))
+    before_git = git_state(git_repo)
+    answer(monkeypatch, "y\n")
+
+    assert write_readme(git_repo, "--apply") == EXIT_OK
+
+    captured = capsys.readouterr()
+    assert "README:   none yet: a new README.md" in captured.out
+    assert "Create README.md? [y/N]" in captured.err
+    assert "Created README.md.\nUndo with: rm README.md" in captured.out
+    assert (git_repo / "README.md").read_text() == (
+        f"# {git_repo.name}\n\nTiny stats helpers.\n\n"
+        "## Usage\n\n```bash\nnpm run dev\n```\n"
+    )
+    assert git_state(git_repo) == before_git
+
+
+def test_unsafe_readme_text_is_rejected(readme_repo, capsys, fake_ai, monkeypatch):
+    sections = [("usage", "Usage", "<script>steal()</script>")]
+    fake_ai.result = AIResult(fake_readme_proposal(sections), "fake", AIUsage(1, 1))
+    before = snapshot(readme_repo)
+    answer(monkeypatch, "y\n")
+
+    assert write_readme(readme_repo, "--apply") == EXIT_AI_ERROR
+
+    err = capsys.readouterr().err
+    assert "The proposed README sections were rejected" in err
+    assert "HTML that runs code" in err
+    assert snapshot(readme_repo) == before
+
+
+def test_a_section_with_a_missing_script_is_dropped(readme_repo, capsys, fake_ai):
+    sections = [
+        ("installation", "Installation", "```bash\nnpm install\n```"),
+        ("usage", "Usage", "```bash\nnpm run deploy\n```"),
+    ]
+    fake_ai.result = AIResult(fake_readme_proposal(sections), "fake", AIUsage(1, 1))
+
+    assert write_readme(readme_repo) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "Added:  Installation (installation)" in out
+    assert (
+        "Not used (1):\n"
+        "  - usage (Usage): `npm run deploy` runs a script no package.json has"
+    ) in out
+
+
+def test_readme_json(readme_repo, capsys, fake_readme_ai):
+    write_readme(readme_repo, "--format", "json")
+
+    document_json = json.loads(capsys.readouterr().out)
+    assert document_json["readme"]["path"] == "README.md"
+    assert document_json["readme"]["applied"] is False
+    assert [a["topic"] for a in document_json["ai"]["added"]] == [
+        "installation",
+        "usage",
+        "tests",
+    ]
+    assert document_json["ai"]["creates"] is False
+    assert document_json["ai"]["diff"].startswith("--- a/README.md\n")
+
+
+def test_a_complete_readme_needs_no_ai_call(readme_repo, capsys, fake_readme_ai):
+    write(readme_repo, "README.md", COMPLETE_README)
+
+    assert write_readme(readme_repo) == EXIT_OK
+
+    assert "README.md needs no section DevAI can ask for. Nothing was sent." in (
+        capsys.readouterr().out
+    )
+    assert fake_readme_ai.requests == []
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--readme"], "--readme requires --ai"),
+        (["--ai", "--readme", "--file", "stats.js"], "use --file or --readme"),
+        (["--ai"], "--ai needs the file to document (--file PATH) or --readme"),
+    ],
+)
+def test_readme_usage_errors(readme_repo, capsys, fake_readme_ai, args, message):
+    assert main(["docs", str(readme_repo), *args]) == EXIT_USAGE
+
+    assert message in capsys.readouterr().err
+    assert fake_readme_ai.requests == []
+
+
+def test_a_readme_that_is_not_markdown_is_refused(git_repo, capsys, fake_readme_ai):
+    write(git_repo, "README.rst", "Stats\n=====\n")
+
+    assert write_readme(git_repo) == EXIT_USAGE
+    assert "only Markdown READMEs can be extended" in capsys.readouterr().err

@@ -14,7 +14,7 @@ binaries and files, so a missing script there isn't necessarily an error.
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -58,7 +58,7 @@ TOPICS: dict[str, tuple[tuple[str, ...], ...]] = {
     "license": (("licen",),),
 }
 
-ATX_HEADING = re.compile(r" {0,3}#{1,6}(?:\s+(?P<text>.*?))?\s*#*\s*")
+ATX_HEADING = re.compile(r" {0,3}(?P<hashes>#{1,6})(?:\s+(?P<text>.*?))?\s*#*\s*")
 SETEXT_UNDERLINE = re.compile(r" {0,3}(?:=+|-{2,})\s*")
 FENCE = re.compile(r" {0,3}(?P<fence>`{3,}|~{3,})")
 INLINE_CODE = re.compile(r"(?P<ticks>`+)(?P<code>.+?)(?P=ticks)")
@@ -72,6 +72,13 @@ RUN_SCRIPT = re.compile(
 )
 # Shortcuts that run a script by its name.
 SHORTCUT = re.compile(r"\b(?P<tool>npm|pnpm)\s+(?P<script>test|t|start)\b")
+
+
+@dataclass(frozen=True)
+class Heading:
+    line: int  # 1-based; for an underlined (setext) heading, the text's line
+    level: int
+    words: tuple[str, ...]  # lowercase
 
 
 @dataclass(frozen=True)
@@ -120,13 +127,19 @@ def check_readme(root: Path, files: tuple[PurePosixPath, ...]) -> ReadmeMap | No
     text = read_scannable_text(root / path, path)
     if path.suffix.lower() not in MARKDOWN_SUFFIXES or text is None:
         return ReadmeMap(path, checked=False)
+    return readme_map(path, text, root, files)
 
+
+def readme_map(
+    path: PurePosixPath, text: str, root: Path, files: tuple[PurePosixPath, ...]
+) -> ReadmeMap:
+    """The checks above on Markdown `text` (also used on a README not yet written)."""
     headings, code = split_markdown(text)
     license_file = find_license_file(files)
     found = [
         topic
         for topic, keywords in TOPICS.items()
-        if any(matches(heading, keywords) for heading in headings)
+        if any(matches(heading.words, keywords) for heading in headings)
         or (topic == "license" and license_file is not None)
     ]
     mentions = script_mentions(code)
@@ -147,9 +160,9 @@ def check_readme(root: Path, files: tuple[PurePosixPath, ...]) -> ReadmeMap | No
     )
 
 
-def split_markdown(text: str) -> tuple[list[list[str]], list[tuple[int, str]]]:
-    """The headings (as lowercase words) and the code (line number, code text)."""
-    headings: list[list[str]] = []
+def split_markdown(text: str) -> tuple[list[Heading], list[tuple[int, str]]]:
+    """The headings and the code (line number, code text), outside and inside code."""
+    headings: list[Heading] = []
     code: list[tuple[int, str]] = []
     fence = None  # the opening fence, while inside a code block
     previous = ""
@@ -172,15 +185,18 @@ def split_markdown(text: str) -> tuple[list[list[str]], list[tuple[int, str]]]:
         else:
             heading = ATX_HEADING.fullmatch(line)
             if heading is not None:
-                headings.append(WORD.findall((heading["text"] or "").lower()))
+                words = WORD.findall((heading["text"] or "").lower())
+                headings.append(Heading(number, len(heading["hashes"]), tuple(words)))
             elif previous.strip() and SETEXT_UNDERLINE.fullmatch(line):
-                headings.append(WORD.findall(previous.lower()))
+                level = 1 if line.strip().startswith("=") else 2
+                words = WORD.findall(previous.lower())
+                headings.append(Heading(number - 1, level, tuple(words)))
             code += [(number, span["code"]) for span in INLINE_CODE.finditer(line)]
             previous = line
     return headings, code
 
 
-def matches(heading: list[str], keywords: tuple[tuple[str, ...], ...]) -> bool:
+def matches(heading: Sequence[str], keywords: tuple[tuple[str, ...], ...]) -> bool:
     """True if a keyword's words start consecutive words of the heading."""
     for keyword in keywords:
         for start in range(len(heading) - len(keyword) + 1):

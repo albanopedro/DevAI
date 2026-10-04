@@ -21,6 +21,7 @@ if importlib.util.find_spec("pydantic") is None:
         "test_fix_apply.py",
         "test_testgen.py",
         "test_docgen_ai.py",
+        "test_readmegen_ai.py",
     ]
 
 
@@ -217,3 +218,24 @@ def fake_docs_proposal(docs=None, **overrides):
         notes=["average raises ZeroDivisionError for an empty list."],
     )
     return DocsProposal(**(fields | overrides))
+
+
+def fake_readme_proposal(sections=None, description="", **overrides):
+    """A valid ReadmeProposal (requires [ai])."""
+    from devai.readmegen.schema import ReadmeProposal, ReadmeSection
+
+    if sections is None:
+        sections = [
+            ("installation", "Installation", "```bash\nnpm install\n```"),
+            ("usage", "Usage", "```bash\nnpm run dev\n```"),
+            ("tests", "Running tests", "```bash\nnpm test\n```"),
+        ]
+    fields = dict(
+        description=description,
+        sections=[
+            ReadmeSection(topic=topic, heading=heading, body=body)
+            for topic, heading, body in sections
+        ],
+        notes=["Assumes Node.js is installed."],
+    )
+    return ReadmeProposal(**(fields | overrides))

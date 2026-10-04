@@ -1,4 +1,5 @@
 """`devai fix`: AI-proposed fixes, validated and shown as a diff.
 
-Phase 6a: proposals only. Nothing is ever written to the project here.
+Nothing is written unless --apply is given and the user types "y" in a
+terminal; fix/apply.py repeats every safety check right before writing (D044).
 """

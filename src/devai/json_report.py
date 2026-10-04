@@ -205,3 +205,41 @@ def doc_proposal_to_json(
             "diff": change.diff if change is not None else None,
         }
     return json.dumps(document, indent=2, ensure_ascii=False, default=str)
+
+
+def readme_proposal_to_json(
+    name: str, context: dict, ai: AIResult | None, plan, rejected: str | None
+) -> str:
+    """README sections as JSON: the topics, the proposal, the diff (nothing applied)."""
+    readme = context["readme"]
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "devai_version": __version__,
+        "readme": {
+            "project": name,
+            "path": readme["path"],
+            "exists": readme["exists"],
+            "topics": context["topics"],
+            "applied": False,
+        },
+    }
+    if ai is not None:
+        change = plan.change if plan is not None else None
+        document["ai"] = {
+            "model": ai.model,
+            "usage": asdict(ai.usage),
+            "proposal": ai.report.model_dump(mode="json"),
+            "rejected": rejected,
+            "added": [
+                {"topic": topic, "heading": heading}
+                for topic, heading in (plan.added if plan is not None else ())
+            ],
+            "dropped": [
+                {"section": what, "reason": why}
+                for what, why in (plan.dropped if plan is not None else ())
+            ],
+            "links": list(plan.links) if plan is not None else [],
+            "creates": plan.creates if plan is not None else False,
+            "diff": change.diff if change is not None else None,
+        }
+    return json.dumps(document, indent=2, ensure_ascii=False, default=str)

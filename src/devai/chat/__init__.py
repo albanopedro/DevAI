@@ -1,6 +1,7 @@
-"""`devai chat`: questions about a project, answered with selected files.
+"""`devai chat`: questions about a project, answered with files the user approves.
 
-Phase 5a: local file selection and the context preview (--dry-run).
+Files are chosen locally (keyword search or --file) and shown before they are
+sent; answers are grounded in the lines that were sent (D039-D041).
 """
 
 from devai.chat.context import build_chat_context

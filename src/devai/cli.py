@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from devai import __version__
 from devai.ai import build_context, estimate_tokens, serialize_context
@@ -20,6 +20,7 @@ from devai.docgen.context import build_docs_context
 from devai.docgen.plan import DocsError, find_targets, plan_docs
 from devai.docmap import build_docs_map, doc_sources
 from devai.docmap.python_docs import NotPython
+from devai.docmap.readme import MARKDOWN_SUFFIXES, find_readme, readme_map
 from devai.fix.context import MAX_FIX_FILES, build_fix_context
 from devai.json_report import (
     chat_to_json,
@@ -28,10 +29,17 @@ from devai.json_report import (
     docs_to_json,
     fix_to_json,
     generated_tests_to_json,
+    readme_proposal_to_json,
     review_to_json,
     to_json,
 )
 from devai.models import CheckReport, Finding, ProjectInfo, Severity
+from devai.readmegen.context import (
+    build_readme_context,
+    project_facts,
+    readme_topics,
+)
+from devai.readmegen.plan import ReadmeError, plan_readme
 from devai.report import (
     SEPARATOR,
     format_ai_review_section,
@@ -47,6 +55,9 @@ from devai.report import (
     format_fix_proposal,
     format_generated_tests,
     format_nothing_to_document,
+    format_readme_complete,
+    format_readme_header,
+    format_readme_proposal,
     format_report,
     format_review,
     format_testgen_header,
@@ -79,6 +90,7 @@ FAIL_ON_LEVELS = ["high", "medium", "low", "none"]
 PROGRESS = {
     "tests": "Asking {model} for tests…",
     "docs": "Asking {model} for docs…",
+    "readme": "Asking {model} for README sections…",
     "fix": "Asking {model} for a fix…",
     "analysis": "Analyzing with {model}…",
     "review": "Reviewing with {model}…",
@@ -87,6 +99,8 @@ PROGRESS = {
 LOCAL_PROGRESS = {
     "tests": "Asking {model} for tests locally (nothing leaves this machine)…",
     "docs": "Asking {model} for docs locally (nothing leaves this machine)…",
+    "readme": "Asking {model} for README sections locally "
+    "(nothing leaves this machine)…",
     "fix": "Asking {model} for a fix locally (nothing leaves this machine)…",
     "analysis": "Analyzing locally with {model} (nothing leaves this machine)…",
     "review": "Reviewing locally with {model} (nothing leaves this machine)…",
@@ -288,6 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     docs.add_argument(
         "--file", metavar="PATH", help="with --ai: the source file to document"
+    )
+    docs.add_argument(
+        "--readme",
+        action="store_true",
+        help="with --ai: write the README sections that are missing, instead of "
+        "docstrings",
     )
     docs.add_argument(
         "--ai",
@@ -821,7 +841,7 @@ def create_tests(root: Path, path, content: str, command: str) -> int:
 
 def run_docs(args: argparse.Namespace) -> int:
     """Where docs seem to be missing. A map, not a check: always exit 0 (D048)."""
-    for option in ("dry_run", "apply", "yes", "provider", "file"):
+    for option in ("dry_run", "apply", "yes", "provider", "file", "readme"):
         if getattr(args, option) and not args.ai:
             print_error(f"--{option.replace('_', '-')} requires --ai")
             return EXIT_USAGE
@@ -843,14 +863,19 @@ def run_docs(args: argparse.Namespace) -> int:
 
 def run_docs_generation(args: argparse.Namespace) -> int:
     """Propose docs for one file; write them only with --apply and a "y" (D049)."""
-    if not args.file:
-        print_error("--ai needs the file to document: --file PATH")
+    if args.file and args.readme:
+        print_error("use --file or --readme, not both")
         return EXIT_USAGE
     if args.apply and (args.dry_run or args.format == "json"):
         print_error("--apply can't be combined with --dry-run or --format json")
         return EXIT_USAGE
     if args.apply and not is_interactive():
         print_error("--apply needs a terminal: you approve every change yourself")
+        return EXIT_USAGE
+    if args.readme:
+        return run_readme_generation(args)
+    if not args.file:
+        print_error("--ai needs the file to document (--file PATH) or --readme")
         return EXIT_USAGE
 
     path = Path(args.path)
@@ -1194,6 +1219,143 @@ def format_testgen_preview(context: dict, output_format: str) -> str:
         f"Source:          {printable(context['source']['path'])}",
         f"Existing tests:  {printable(', '.join(existing)) or 'none'}",
         f"Untested names:  {printable(', '.join(context['untested_names'])) or 'none'}",
+        SEPARATOR,
+        json.dumps(context, indent=2, ensure_ascii=False),
+        SEPARATOR,
+        f"Size when sent: {len(compact):,} characters "
+        f"(~{estimate_tokens(compact):,} tokens, estimated), "
+        f"{context['redacted_lines']} lines redacted",
+    ]
+    return "\n".join(lines)
+
+
+def run_readme_generation(args: argparse.Namespace) -> int:
+    """Propose the missing README sections; write them only after a "y" (D050)."""
+    path = Path(args.path)
+    try:
+        info = analyze_project(path)
+    except NotADirectoryError:
+        print_error(f"not a directory: {path}")
+        return EXIT_USAGE
+    readme_path = find_readme(info.files)
+    text = None
+    readme = None
+    if readme_path is not None:
+        if readme_path.suffix.lower() not in MARKDOWN_SUFFIXES:
+            print_error(f"{readme_path}: only Markdown READMEs can be extended")
+            return EXIT_USAGE
+        try:
+            source = extra_file(info.path, str(readme_path), info.files, "the README")
+        except ChatError as problem:
+            print_error(str(problem))
+            return EXIT_USAGE
+        text = source.text
+        readme = readme_map(readme_path, text, info.path, info.files)
+
+    topics, left_out = readme_topics(info, readme)
+    if not topics:
+        print(format_readme_complete(readme_path, left_out))
+        return EXIT_OK  # nothing to ask: no AI call
+    context = build_readme_context(info, run_checks(info), readme_path, text, topics)
+    if args.dry_run:
+        print(format_readme_preview(context, args.format))
+        return EXIT_OK
+    if args.apply and readme_path is not None:
+        from devai.fix.apply import ApplyError, check_can_apply
+
+        try:
+            check_can_apply(info.path, [source])  # before spending an AI call
+        except ApplyError as problem:
+            print_error(str(problem))
+            return EXIT_USAGE
+
+    try:
+        client, settings = prepare_ai(assume_yes=args.yes, provider=args.provider)
+        from devai.readmegen.ai import readme_question, readme_request  # needs [ai]
+    except (SettingsError, SetupError) as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+
+    if args.format == "text":
+        print(format_readme_header(info.name, context, left_out), flush=True)
+    result, failed = run_ai(
+        client,
+        settings,
+        readme_request(context),
+        readme_question(context, settings),
+        args.yes,
+        task="readme",
+    )
+    if failed:
+        return EXIT_AI_ERROR
+    if result is None:
+        return EXIT_OK  # declined: nothing was sent
+    proposal = result.report
+    target = readme_path or PurePosixPath("README.md")
+    try:
+        plan = plan_readme(
+            target,
+            text,
+            [(s.topic, s.heading, s.body) for s in proposal.sections],
+            proposal.description,
+            topics,
+            info.name,
+            project_facts(info),
+            info.path,
+            info.files,
+        )
+    except ReadmeError as problem:
+        print_error(
+            f"The proposed README sections were rejected: {problem}. "
+            "Nothing was changed."
+        )
+        if args.format == "json":
+            rejected = str(problem)
+            print(readme_proposal_to_json(info.name, context, result, None, rejected))
+        return EXIT_AI_ERROR
+
+    if args.format == "json":
+        print(readme_proposal_to_json(info.name, context, result, plan, None))
+        return EXIT_OK
+    print()
+    print(format_readme_proposal(result, plan, applying=args.apply), flush=True)
+    if not args.apply or plan.change is None:
+        return EXIT_OK
+    if plan.creates:
+        return create_readme(info.path, plan.change.path, plan.change.after)
+    return apply_fix(info.path, [plan.change], [], what="these sections")
+
+
+def create_readme(root: Path, path: PurePosixPath, content: str) -> int:
+    """Ask, then create the README exclusively, as test files are (D047)."""
+    from devai.testgen.create import CreateError, create_test_file, undo_command
+
+    print(f"\nCreate {path}? [y/N] ", end="", file=sys.stderr, flush=True)
+    if sys.stdin.readline().strip().lower() not in {"y", "yes"}:
+        print("Not created. Nothing was changed.")
+        return EXIT_OK
+    try:
+        created = create_test_file(root, path, content)
+    except CreateError as problem:
+        print_error(str(problem))
+        return EXIT_USAGE
+    print(f"\nCreated {path}.\nUndo with: {undo_command(path, created)}")
+    print("Nothing was committed.")
+    return EXIT_OK
+
+
+def format_readme_preview(context: dict, output_format: str) -> str:
+    """Show what a README request would send, exactly. Makes no network call."""
+    if output_format == "json":
+        return json.dumps(context, indent=2, ensure_ascii=False)
+    compact = serialize_context(context)
+    readme = context["readme"]
+    sent = printable(readme["path"]) if readme["exists"] else "none yet (a new one)"
+    lines = [
+        "AI README CONTEXT PREVIEW (dry run: nothing was sent, nothing was changed)",
+        SEPARATOR,
+        f"README:  {sent}",
+        f"Topics:  {', '.join(context['topics'])}",
         SEPARATOR,
         json.dumps(context, indent=2, ensure_ascii=False),
         SEPARATOR,

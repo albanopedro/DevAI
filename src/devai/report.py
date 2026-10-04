@@ -747,3 +747,92 @@ def format_doc_proposal(result: AIResult, plan, applying: bool = False) -> str:
         "Written by AI. Read it before applying: docs can be wrong about the code.",
     ]
     return "\n".join(lines)
+
+
+def format_readme_header(name: str, context: dict, left_out: list) -> str:
+    readme = context["readme"]
+    shown = "none yet: a new README.md"
+    if readme["exists"]:
+        shown = printable(readme["path"])
+    lines = [
+        "DEVAI README",
+        SEPARATOR,
+        f"Project:  {printable(name)}",
+        f"README:   {shown}",
+        f"Topics:   {', '.join(context['topics'])}",
+    ]
+    lines += format_left_out(left_out)
+    return "\n".join(lines)
+
+
+def format_left_out(left_out: list) -> list[str]:
+    if not left_out:
+        return []
+    lines = ["Not asked:"]
+    for topic, why in left_out:
+        lines += wrap(f"{topic}: {why}", "  - ", "    ")
+    return lines
+
+
+def format_readme_complete(path, left_out: list) -> str:
+    """Why no AI call is needed for the README."""
+    lines = [
+        f"{printable(str(path)) if path else 'The README'} needs no section DevAI "
+        "can ask for. Nothing was sent."
+    ]
+    return "\n".join(lines + format_left_out(left_out))
+
+
+def format_readme_proposal(result: AIResult, plan, applying: bool = False) -> str:
+    """Render the README change as a diff. Model output: untrusted."""
+    lines = [f"PROPOSED README SECTIONS ({printable(result.model)})", SEPARATOR]
+    change = plan.change
+    if change is not None:
+        # The diff keeps its own lines; only control characters are removed.
+        lines += [printable(line) for line in change.diff.rstrip("\n").split("\n")]
+        added = ", ".join(f"{heading} ({topic})" for topic, heading in plan.added)
+        lines += [""]
+        lines += wrap(f"Added:  {added}", "", "        ")
+    else:
+        lines.append("No usable section in the answer: nothing to add.")
+    if plan.dropped:
+        lines += ["", f"Not used ({len(plan.dropped)}):"]
+        lines += [
+            line
+            for what, why in plan.dropped
+            for line in wrap(f"{what}: {why}", "  - ", "    ")
+        ]
+    if plan.links:
+        lines += ["", "Links the AI wrote (check them before applying):"]
+        lines += [f"  - {printable(link)}" for link in plan.links]
+    if change is not None:
+        lines.append("")
+        if plan.creates:
+            lines += [
+                "A new README.md: checked. devai docs finds each section in it, and",
+                "every npm command in it runs a script that exists.",
+            ]
+        else:
+            lines += [
+                "Only additions: checked. Every line of the README is still there,",
+                "unchanged and in order, and devai docs finds each new section with",
+                "no new npm command that fails.",
+            ]
+
+    notes = result.report.notes
+    if notes:
+        lines += ["", "Notes from the AI:"]
+        lines += [line for note in notes for line in wrap(note, "  - ", "    ")]
+
+    usage = result.usage
+    lines.append("")
+    if change is None:
+        lines.append("Nothing was changed.")
+    elif not applying:
+        action = "create it" if plan.creates else "write these sections"
+        lines.append(f"Nothing was changed. To {action}, run again with --apply.")
+    lines += [
+        f"Tokens: {usage.input_tokens:,} in / {usage.output_tokens:,} out",
+        "Written by AI. Read it before applying: instructions can be wrong.",
+    ]
+    return "\n".join(lines)

@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 8b: AI-written docstrings).
+> **Status:** early development (Phase 8: documentation, complete).
 
 ## Goal
 
@@ -284,6 +284,22 @@ devai docs --file src/stats.py --ai --dry-run  # see what would be sent
 - **Docs can still be wrong.** DevAI proves the code is untouched, not that the text is true. In a real test, a free model described a `filter` backwards, calling the entries it keeps the ones it removes. Read the diff before you apply it.
 - Only missing docs are written. To correct an existing docstring, use `devai fix --file X --ask "..."`.
 
+#### Writing README sections with AI (`--readme --ai`)
+
+```bash
+devai docs --readme --ai            # propose the missing sections, shown as a diff
+devai docs --readme --ai --apply    # add them (or create README.md), after your "y"
+devai docs --readme --ai --dry-run  # see what would be sent
+```
+
+- **Which sections:** the ones `devai docs` finds missing, but only when the project backs them: installation and usage always, tests only if the project has tests, and the license never. Choosing a license is your decision, not the AI's.
+- **What is sent:** the README (secrets redacted), the project summary and the scripts the project defines (`package.json` scripts, `[project.scripts]` in `pyproject.toml`), each with how it runs. No source code.
+- **The AI writes each section's title and text; DevAI adds them** before the license section, or at the end, at the level of your README's own sections. Nothing already in the README changes: DevAI checks that every original line is still there, in order.
+- **Commands are checked against the project.** A section is dropped, with the reason, if it runs an npm script that no `package.json` has, uses npm, pnpm or yarn in a project without a `package.json` (global installs aside), or pip, pytest, poetry or pipenv in a project without Python. Then `devai docs` runs on the new README: it must find each new section, with no new command that fails.
+- **Rejected whole** for a redacted line, a possible secret, or HTML that runs code (a script tag, a `javascript:` link). Links the AI wrote are listed for you to check.
+- **Without a README**, DevAI proposes a new `README.md` (title, a short description, the sections) and creates it after your `y`, exclusively, like test files; `rm README.md` undoes it.
+- Only Markdown READMEs are extended.
+
 ### Proposing fixes
 
 `devai fix` asks a free AI for a fix and shows it as a diff. It writes to your project only with `--apply`, after you type `y`, and only when every safety check passes.
@@ -431,6 +447,11 @@ src/devai/
 │   ├── python_insert.py   # where docstrings go, and the syntax-tree proof
 │   ├── js_insert.py       # where JSDoc goes: one comment per block
 │   └── plan.py            # safety checks, placement and the diff (nothing written)
+├── readmegen/        # `devai docs --readme --ai`: README sections written by AI
+│   ├── context.py         # what it may receive (README, summary, scripts); which topics
+│   ├── ai.py              # the task: prompt, consent question
+│   ├── schema.py          # ReadmeProposal: sections (topic, heading, body), notes
+│   └── plan.py            # checks, commands against the project, placement, the diff
 ├── testgen/          # `devai test --ai`: new test files proposed by AI
 │   ├── context.py         # what it may receive: the source and its existing tests
 │   ├── ai.py              # the task: prompt, consent question
@@ -471,7 +492,7 @@ tests/
 | 7b | Test Generation | `devai test --file X --ai`: a new test file, validated, created only after your "y", never overwriting, never run by DevAI |
 | 8a | Documentation Gaps | `devai docs`: Python names without docstrings, JS/TS exports without JSDoc, README sections, npm scripts the README runs that don't exist; nothing sent |
 | 8b | AI Docstrings | `devai docs --file X --ai`: docstrings and JSDoc proposed by a free AI, applied only if the code itself is unchanged, after your "y" |
-| 8c | AI README | `devai docs --readme --ai`: README edits proposed by a free AI, with every command checked against the project |
+| 8c | AI README | `devai docs --readme --ai`: missing README sections written by a free AI and added without editing a line, with every command checked against the project |
 | 9 | Web Interface | FastAPI + React, Docker |
 | 10 | GitHub Integration | Repositories, pull requests, issues |
 | 11 | Agent System | Only if a real need appears |
