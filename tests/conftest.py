@@ -23,6 +23,9 @@ if importlib.util.find_spec("pydantic") is None:
         "test_docgen_ai.py",
         "test_readmegen_ai.py",
     ]
+# The web interface needs the optional [web] extra (FastAPI).
+if importlib.util.find_spec("fastapi") is None:
+    collect_ignore.append("test_web.py")
 
 
 def make_files(root: Path, *relative_paths: str) -> None:

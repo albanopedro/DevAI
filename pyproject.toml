@@ -12,10 +12,14 @@ requires-python = ">=3.11"
 dependencies = ["pathspec>=0.12"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+# httpx2: what FastAPI's TestClient uses to call the app without a server.
+dev = ["pytest>=8", "ruff>=0.6", "httpx2>=2"]
 # AI analysis: optional. Both providers (OpenCode CLI, Ollama) are free and
 # talk over subprocess/HTTP from the standard library; Pydantic validates answers.
 ai = ["pydantic>=2"]
+# Web interface: optional. `devai serve` runs a local API (FastAPI) on 127.0.0.1
+# with uvicorn; the React pages in web/ are built with Node, which users don't need.
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 devai = "devai.cli:main"

@@ -1,0 +1,10 @@
+# Only what the image needs: pyproject, README, LICENSE, src/ and web/.
+.git
+.venv
+**/__pycache__
+**/node_modules
+web/dist
+.pytest_cache
+.ruff_cache
+tests
+docs

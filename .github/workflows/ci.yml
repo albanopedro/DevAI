@@ -21,7 +21,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install
-        run: pip install -e ".[dev,ai]"
+        run: pip install -e ".[dev,ai,web]"
 
       - name: Lint
         run: ruff check .
@@ -31,3 +31,51 @@ jobs:
 
       - name: Test
         run: pytest
+
+  # The pages of the web interface (web/): their tests, then a build.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # The container: it builds, serves the pages, and keeps the API locked.
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t devai .
+
+      - name: Serve a project and check the locks
+        run: |
+          docker run -d --name devai -p 127.0.0.1:8765:8765 -v "$PWD:/project" devai
+          for attempt in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8765/ > /dev/null && break
+            sleep 1
+          done
+          docker logs devai
+          curl -sf http://127.0.0.1:8765/ | grep -q '<div id="root">'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/projects)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://127.0.0.1:8765/)" = 403
+          docker logs devai | grep -q 'Open: http://127.0.0.1:8765/?token='

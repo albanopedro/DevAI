@@ -326,6 +326,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_ai_send_options(docs)
 
+    serve = subparsers.add_parser(
+        "serve",
+        help="open the web interface for these projects (this computer only)",
+    )
+    serve.add_argument(
+        "paths",
+        nargs="*",
+        default=["."],
+        metavar="path",
+        help="project directories the pages may open (default: current directory)",
+    )
+    serve.add_argument(
+        "--port", type=int, default=8765, help="local port (default: 8765)"
+    )
+    serve.add_argument("--no-open", action="store_true", help="don't open the browser")
+    serve.add_argument(
+        "--listen-all",
+        action="store_true",
+        help="for containers only: listen on every interface of the container "
+        "(publish the port on the host's 127.0.0.1 alone)",
+    )
+
     return parser
 
 
@@ -378,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_test(args)
     if args.command == "docs":
         return run_docs(args)
+    if args.command == "serve":
+        return run_serve(args)
     if args.command not in ("analyze", "review"):
         parser.print_help()
         return EXIT_USAGE
@@ -836,6 +860,30 @@ def create_tests(root: Path, path, content: str, command: str) -> int:
         print_error(str(problem))
         return EXIT_USAGE
     print(format_tests_created(path, undo_command(path, created), command))
+    return EXIT_OK
+
+
+def run_serve(args: argparse.Namespace) -> int:
+    """The web interface (D051): runs until Ctrl+C."""
+    if not 1 <= args.port <= 65535:
+        print_error("--port must be between 1 and 65535")
+        return EXIT_USAGE
+    try:
+        from devai.web.serve import serve
+    except ImportError:
+        print_error(
+            "the web interface is not installed. Install it with: "
+            "pip install 'devai[web]'"
+        )
+        return EXIT_USAGE
+    try:
+        serve(args.paths, args.port, args.listen_all, not args.no_open)
+    except NotADirectoryError as problem:
+        print_error(f"not a directory: {problem}")
+        return EXIT_USAGE
+    except OSError as problem:  # the port is taken, for example
+        print_error(f"can't serve on port {args.port}: {problem}")
+        return EXIT_USAGE
     return EXIT_OK
 
 

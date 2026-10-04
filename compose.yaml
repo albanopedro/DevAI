@@ -1,0 +1,10 @@
+# PROJECT=/path/to/project docker compose up --build
+services:
+  devai:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765" # this computer only
+    volumes:
+      - ${PROJECT:-.}:/project # read and, after your confirmation, written
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Ollama on the host (Linux too)

@@ -52,7 +52,7 @@ def readme_request(context: dict[str, Any]) -> AIRequest:
 def readme_question(context: dict[str, Any], settings: AISettings) -> str:
     """The consent question: what leaves the machine, and what for."""
     tokens = estimate_tokens(serialize_context(context))
-    topics = " and ".join(context["topics"])
+    topics = " and ".join(", ".join(context["topics"]).rsplit(", ", 1))
     readme = context["readme"]
     if readme["exists"]:
         sent = f"{readme['path']} and a project summary"

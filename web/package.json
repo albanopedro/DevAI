@@ -1,0 +1,23 @@
+{
+  "name": "devai-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The pages of DevAI's web interface, served by `devai serve`.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.1.1",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}

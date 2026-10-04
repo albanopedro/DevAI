@@ -5,6 +5,9 @@ __pycache__/
 build/
 dist/
 
+# Web interface (web/): dependencies; its build goes to web/dist (ignored above)
+node_modules/
+
 # Virtual environments
 .venv/
 venv/

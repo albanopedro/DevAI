@@ -4,7 +4,7 @@
 
 AI-powered developer assistant for code analysis, review, testing and software engineering automation.
 
-> **Status:** early development (Phase 8: documentation, complete).
+> **Status:** early development (Phase 9: web interface).
 
 ## Goal
 
@@ -28,7 +28,32 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"        # DevAI + test tools (only dependency: pathspec)
 pip install -e ".[dev,ai]"     # also the free AI analysis (adds Pydantic)
+pip install -e ".[dev,ai,web]" # also the web interface (adds FastAPI, uvicorn)
 ```
+
+## Web interface
+
+`devai serve` opens DevAI in your browser: the analysis, the review of your changes, the missing tests and docs, and the AI tasks, always with a preview before anything is sent and a confirmation before anything is written.
+
+```bash
+pip install -e ".[ai,web]"                         # once: FastAPI and uvicorn
+npm --prefix web ci && npm --prefix web run build  # once: build the pages (needs Node)
+devai serve ../my-project ../other-project         # opens http://127.0.0.1:8765/?token=...
+```
+
+- **For this computer only.** The server listens on 127.0.0.1. Every API call needs the token in the address it prints, a new one at every start. Requests from other sites (by their Origin) or under other host names (DNS rebinding) are refused, and the pages can open only the projects you named. The token leaves the address bar as soon as the page loads.
+- **The tabs:** Overview (the analysis and its findings), Review (the current git changes), Tests and Docs (the maps, with a button per file to write tests or docs with AI, and one for the README), and Fix (describe a change, name up to 3 files). The chat stays in the terminal.
+- **AI in two clicks.** The first shows exactly what would be sent and where, the same context as `--dry-run`; nothing leaves until you press Send. The answer goes through the same checks as in the terminal. Pick the AI in the header: OpenCode's free model (online) or Ollama (this computer).
+- **Writing in two more:** the diff, then a confirmation. The page sends only the proposal's id, so what is written is what DevAI checked and kept, never text from the page. The checks of `--apply` run again right before writing (committed, unchanged files; new files never overwrite anything), and the page shows the undo command.
+
+### With Docker
+
+```bash
+PROJECT=/path/to/project docker compose up --build
+docker compose logs devai   # shows the address with the token
+```
+
+The image builds the pages with Node and installs DevAI with the `[ai,web]` extras; Node isn't in the final image. The port is published on the host's 127.0.0.1 only. Inside the container, the AI is Ollama on your machine (`host.docker.internal:11434`), and DevAI still asks before sending; OpenCode's CLI isn't in the image. Docker Desktop (free for personal use) and Colima (open source) both work.
 
 ## Usage
 
@@ -385,9 +410,11 @@ Rules behind this table:
 pytest               # tests
 ruff check .         # lint
 ruff format .        # format code
+npm --prefix web test     # tests of the pages
+npm --prefix web run dev  # the pages with hot reload, next to a running `devai serve`
 ```
 
-CI (GitHub Actions) runs lint, format check and tests on Python 3.11–3.14 for every push to `main` and every pull request.
+CI (GitHub Actions) runs lint, format check and tests on Python 3.11–3.14, the pages' tests and build, and builds the Docker image and checks its locks, for every push to `main` and every pull request.
 
 Project layout:
 
@@ -458,6 +485,11 @@ src/devai/
 │   ├── schema.py          # GeneratedTests: path, content, covers, notes
 │   ├── validate.py        # path, name, language and content rules
 │   └── create.py          # exclusive creation, undo and run commands
+├── web/              # `devai serve`: the local API (FastAPI)
+│   ├── app.py             # routes, the locks, the built pages
+│   ├── security.py        # token, Host and Origin checks, security headers
+│   ├── tasks.py           # AI tasks: prepare, send, apply, from the CLI's pieces
+│   └── serve.py           # starts uvicorn on 127.0.0.1, prints the address
 └── review/           # `devai review`: local checks on git changes
     ├── diff.py            # changed files and added lines, from git
     ├── checks.py          # secrets, .env, tests, debug statements, size
@@ -465,6 +497,12 @@ src/devai/
     ├── ai.py              # the review task: prompt, consent question, grounding
     └── schema.py          # AIReviewReport: the structure the review must have
 tests/
+web/                  # the pages: React + Vite (npm run build → web/dist)
+├── src/App.jsx            # projects, tabs, AI provider, the undo notice
+├── src/api.js             # the API client: the token, from the address to the header
+├── src/components/AiTask.jsx  # preview → Send → answer → confirm → written
+└── src/views/             # Overview, Review, Tests, Docs, Fix
+Dockerfile, compose.yaml  # the container: pages built with Node, DevAI with [ai,web]
 ```
 
 ## Roadmap
@@ -493,7 +531,7 @@ tests/
 | 8a | Documentation Gaps | `devai docs`: Python names without docstrings, JS/TS exports without JSDoc, README sections, npm scripts the README runs that don't exist; nothing sent |
 | 8b | AI Docstrings | `devai docs --file X --ai`: docstrings and JSDoc proposed by a free AI, applied only if the code itself is unchanged, after your "y" |
 | 8c | AI README | `devai docs --readme --ai`: missing README sections written by a free AI and added without editing a line, with every command checked against the project |
-| 9 | Web Interface | FastAPI + React, Docker |
+| 9 | Web Interface | `devai serve`: a local API (FastAPI; 127.0.0.1, token, Host and Origin checks), React pages, AI tasks with a preview before sending and a confirmation before writing, Docker |
 | 10 | GitHub Integration | Repositories, pull requests, issues |
 | 11 | Agent System | Only if a real need appears |
 
