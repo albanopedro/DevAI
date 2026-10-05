@@ -32,6 +32,13 @@ jobs:
       - name: Test
         run: pytest
 
+      # Dogfooding: DevAI checks itself. No HIGH finding (a secret, an exposed
+      # .env), and no command in its own README that would fail.
+      - name: DevAI on itself
+        run: |
+          devai analyze . --fail-on high
+          devai docs . --format json | python -c "import json, sys; scripts = json.load(sys.stdin)['docs_map']['readme']['missing_scripts']; print(scripts or 'README commands: all found'); sys.exit(1 if scripts else 0)"
+
   # The pages of the web interface (web/): their tests, then a build.
   web:
     runs-on: ubuntu-latest

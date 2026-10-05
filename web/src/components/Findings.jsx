@@ -1,8 +1,11 @@
+import { useI18n } from '../i18n.js';
+
 /** Findings of the local checks, worst first (the API already sorts them). */
 export default function Findings({ findings, passed = [] }) {
+  const { t } = useI18n();
   return (
     <div className="findings">
-      {findings.length === 0 && <p className="muted">No findings.</p>}
+      {findings.length === 0 && <p className="muted">{t('findings.none')}</p>}
       <ul className="list">
         {findings.map((finding, index) => (
           <li key={index}>
@@ -30,5 +33,6 @@ export default function Findings({ findings, passed = [] }) {
 }
 
 export function Severity({ level }) {
-  return <span className={`severity severity-${level}`}>{level.toUpperCase()}</span>;
+  const { t } = useI18n();
+  return <span className={`severity severity-${level}`}>{t(`severity.${level}`)}</span>;
 }

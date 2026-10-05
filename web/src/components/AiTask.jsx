@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { consentQuestion, useI18n } from '../i18n.js';
 import AiResult, { GitHubLink } from './AiResult.jsx';
 
 /**
@@ -14,6 +15,7 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
   const [answer, setAnswer] = useState(null);
   const [applied, setApplied] = useState(null);
   const [error, setError] = useState(null);
+  const { t, language, number } = useI18n();
 
   async function attempt(busy, work, onFailure = 'idle') {
     setError(null);
@@ -67,34 +69,38 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
         </button>
       )}
       {error && <p className="error">{error}</p>}
-      {step === 'preparing' && <p className="muted">Preparing what would be sent… (nothing is sent yet)</p>}
+      {step === 'preparing' && <p className="muted">{t('ai.preparing')}</p>}
 
       {(step === 'preview' || step === 'sending') && preview && (
         <section className="panel" aria-label="what would be sent">
-          <h3>Before anything is sent</h3>
-          <p>{preview.question}</p>
+          <h3>{t('ai.before')}</h3>
+          {/* English: the server's question, word for word as in the terminal. */}
+          <p>{language === 'en' ? preview.question : consentQuestion(t, number, preview)}</p>
           <p className={preview.leaves_machine ? 'badge leaves' : 'badge stays'}>
-            {preview.leaves_machine ? 'Leaves this computer: ' : 'Stays on this computer: '}
+            {preview.leaves_machine ? t('ai.leaves') : t('ai.stays')}
             {preview.destination}
           </p>
-          {preview.data_note && <p className="muted">Note: {preview.data_note}.</p>}
+          {preview.data_note && <p className="muted">{t('ai.note', { note: preview.data_note })}</p>}
           <p className="muted">
-            {preview.characters.toLocaleString()} characters (~{preview.tokens.toLocaleString()}{' '}
-            tokens), {preview.redacted_lines} line(s) hidden as possible secrets.
+            {t('ai.size', {
+              characters: number(preview.characters),
+              tokens: number(preview.tokens),
+              redacted: preview.redacted_lines,
+            })}
           </p>
           <details>
-            <summary>Exactly what would be sent</summary>
+            <summary>{t('ai.exactly')}</summary>
             <pre className="code">{JSON.stringify(preview.context, null, 2)}</pre>
           </details>
           {step === 'sending' ? (
-            <p className="muted">Waiting for the AI… this can take a minute.</p>
+            <p className="muted">{t('ai.waiting')}</p>
           ) : (
             <div className="actions">
               <button type="button" className="primary" onClick={send}>
-                Send
+                {t('ai.send')}
               </button>
               <button type="button" onClick={close}>
-                Cancel
+                {t('ai.cancel')}
               </button>
             </div>
           )}
@@ -103,7 +109,7 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
 
       {['result', 'confirming', 'applying', 'applied'].includes(step) && answer && (
         <section className="panel" aria-label="AI answer">
-          <h3>AI answer</h3>
+          <h3>{t('ai.answer')}</h3>
           <AiResult answer={answer} />
           {answer.apply && step !== 'applied' && (
             <ApplyBox
@@ -116,18 +122,20 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
           )}
           {step === 'applied' && applied && applied.url !== undefined && (
             <p className="done">
-              Posted on {applied.files.join(', ')}: <GitHubLink url={applied.url} />.
+              {t('ai.posted', { files: applied.files.join(', ') })}
+              <GitHubLink url={applied.url} />.
             </p>
           )}
           {step === 'applied' && applied && applied.url === undefined && (
             <p className="done">
-              Done: {applied.files.join(', ')}. Undo with: <code>{applied.undo}</code>. Nothing
-              was committed.
+              {t('ai.done', { files: applied.files.join(', ') })}
+              <code>{applied.undo}</code>
+              {t('notice.nothingCommitted')}
             </p>
           )}
           {step !== 'applied' && (
             <button type="button" onClick={close}>
-              Close
+              {t('ai.close')}
             </button>
           )}
         </section>
@@ -137,22 +145,22 @@ export default function AiTask({ api, projectId, request, label, provider, onApp
 }
 
 function ApplyBox({ apply, step, onAsk, onConfirm, onCancel }) {
+  const { t } = useI18n();
   const files = apply.files.join(', ');
   if (apply.blocked) {
     return (
       <div className="apply">
         <button type="button" disabled>
-          Apply
+          {t('apply.apply')}
         </button>
-        <p className="muted">Can't apply now: {apply.blocked}.</p>
+        <p className="muted">{t('apply.cant', { reason: apply.blocked })}</p>
       </div>
     );
   }
   if (step === 'result') {
-    const label = {
-      create: `Create ${files}…`,
-      comment: `Post as a comment on ${files}…`,
-    }[apply.kind] ?? `Apply to ${files}…`;
+    const label = t({ create: 'apply.create', comment: 'apply.comment' }[apply.kind] ?? 'apply.write', {
+      files,
+    });
     return (
       <div className="apply">
         <button type="button" className="primary" onClick={onAsk}>
@@ -165,16 +173,17 @@ function ApplyBox({ apply, step, onAsk, onConfirm, onCancel }) {
     return (
       <div className="apply confirm" role="alertdialog" aria-label="confirm">
         <p>
-          Post this comment on {files} as <strong>{apply.account}</strong>? Everyone who can see it
-          on GitHub will see it. Mentions and #references are broken on purpose.
+          {t('apply.commentBefore', { files })}
+          <strong>{apply.account}</strong>
+          {t('apply.commentAfter')}
         </p>
         <pre className="code">{apply.preview}</pre>
         <div className="actions">
           <button type="button" className="primary" onClick={onConfirm} disabled={step === 'applying'}>
-            Yes, post it
+            {t('apply.yesPost')}
           </button>
           <button type="button" onClick={onCancel} disabled={step === 'applying'}>
-            Cancel
+            {t('ai.cancel')}
           </button>
         </div>
       </div>
@@ -182,17 +191,13 @@ function ApplyBox({ apply, step, onAsk, onConfirm, onCancel }) {
   }
   return (
     <div className="apply confirm" role="alertdialog" aria-label="confirm">
-      <p>
-        {apply.kind === 'create'
-          ? `Create ${files}? It is created only if it doesn't exist yet.`
-          : `Write these changes to ${files}? DevAI checks again that nothing changed since it read them. Undo with git restore.`}
-      </p>
+      <p>{t(apply.kind === 'create' ? 'apply.createConfirm' : 'apply.writeConfirm', { files })}</p>
       <div className="actions">
         <button type="button" className="primary" onClick={onConfirm} disabled={step === 'applying'}>
-          {apply.kind === 'create' ? 'Yes, create it' : 'Yes, write it'}
+          {t(apply.kind === 'create' ? 'apply.yesCreate' : 'apply.yesWrite')}
         </button>
         <button type="button" onClick={onCancel} disabled={step === 'applying'}>
-          Cancel
+          {t('ai.cancel')}
         </button>
       </div>
     </div>

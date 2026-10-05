@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import AiTask from '../components/AiTask.jsx';
 import Findings from '../components/Findings.jsx';
+import { useI18n } from '../i18n.js';
 import Loading from './Loading.jsx';
 
 /** The project's open pull requests and issues, read through gh on this computer. */
 export default function GitHub({ api, projectId, version, ai }) {
   const [state, setState] = useState({ loading: true });
+  const { t } = useI18n();
   useEffect(() => {
     let current = true;
     setState({ loading: true });
@@ -25,12 +27,9 @@ export default function GitHub({ api, projectId, version, ai }) {
           <p className="error">{error}</p>
         ) : (
           <>
-            <p className="muted">
-              {repo}: read with your GitHub CLI (gh). DevAI never merges, closes, approves or
-              creates anything; a comment is posted only after you read it and confirm.
-            </p>
-            <h2>Open pull requests</h2>
-            {pulls.length === 0 && <p className="muted">None.</p>}
+            <p className="muted">{t('github.intro', { repo })}</p>
+            <h2>{t('github.pulls')}</h2>
+            {pulls.length === 0 && <p className="muted">{t('none.found')}</p>}
             <ul className="list files">
               {pulls.map((pull) => (
                 <li key={pull.number}>
@@ -38,16 +37,16 @@ export default function GitHub({ api, projectId, version, ai }) {
                     <strong>#{pull.number}</strong> {pull.title}{' '}
                     <span className="muted">
                       ({pull.author}) {pull.base} ← {pull.head}
-                      {pull.draft && ' · draft'}
+                      {pull.draft && t('github.draft')}
                     </span>
                   </span>
                   <PullChecks api={api} projectId={projectId} number={pull.number} />
-                  <AiTask {...ai} request={{ task: 'pull', number: pull.number }} label="Review with AI…" />
+                  <AiTask {...ai} request={{ task: 'pull', number: pull.number }} label={t('review.aiButton')} />
                 </li>
               ))}
             </ul>
-            <h2>Open issues</h2>
-            {issues.length === 0 && <p className="muted">None.</p>}
+            <h2>{t('github.issues')}</h2>
+            {issues.length === 0 && <p className="muted">{t('none.found')}</p>}
             <ul className="list files">
               {issues.map((issue) => (
                 <li key={issue.number}>
@@ -57,7 +56,7 @@ export default function GitHub({ api, projectId, version, ai }) {
                       ({issue.author}){issue.labels.length > 0 && ` [${issue.labels.join(', ')}]`}
                     </span>
                   </span>
-                  <AiTask {...ai} request={{ task: 'issue', number: issue.number }} label="Plan with AI…" />
+                  <AiTask {...ai} request={{ task: 'issue', number: issue.number }} label={t('github.planButton')} />
                 </li>
               ))}
             </ul>
@@ -71,6 +70,7 @@ export default function GitHub({ api, projectId, version, ai }) {
 /** The local checks of one pull request, loaded when asked. */
 function PullChecks({ api, projectId, number }) {
   const [state, setState] = useState(null);
+  const { t } = useI18n();
   if (state === null) {
     const load = () => {
       setState({ loading: true });
@@ -81,7 +81,7 @@ function PullChecks({ api, projectId, number }) {
     };
     return (
       <button type="button" onClick={load}>
-        Check
+        {t('github.check')}
       </button>
     );
   }
@@ -90,9 +90,7 @@ function PullChecks({ api, projectId, number }) {
       <Loading state={state}>
         {({ review }) => (
           <>
-            <p className="muted">
-              {review.files.length} file(s) changed. Local checks, no AI:
-            </p>
+            <p className="muted">{t('github.pullChecks', { count: review.files.length })}</p>
             <Findings findings={review.checks.findings} passed={review.checks.passed} />
           </>
         )}

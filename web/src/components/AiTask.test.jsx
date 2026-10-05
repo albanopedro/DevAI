@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
+import { LanguageContext } from '../i18n.js';
 import { GitHubLink } from './AiResult.jsx';
 import AiTask from './AiTask.jsx';
 
@@ -178,5 +179,31 @@ describe('GitHub comments', () => {
     rerender(<GitHubLink url="javascript:alert(1)" />);
     expect(container.querySelector('a')).toBeNull();
     expect(screen.getByText('javascript:alert(1)')).toBeTruthy();
+  });
+});
+
+describe('in Portuguese', () => {
+  test('the whole flow speaks Portuguese, the question included', async () => {
+    const api = fakeApi();
+    render(
+      <LanguageContext.Provider value="pt">
+        <AiTask api={api} projectId={0} request={{ task: 'docs', file: 'stats.py' }} label="Escrever docs com IA…" />
+      </LanguageContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByText('Escrever docs com IA…'));
+    await screen.findByText('Antes de enviar qualquer coisa');
+    expect(screen.getByText(/Enviar 1 arquivo\(s\) \(~120 tokens\) para OpenCode \(free model\)\? Arquivos: stats.py./)).toBeTruthy();
+    expect(screen.getByText(/Sai deste computador/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Enviar'));
+    await screen.findByText('Resposta da IA');
+    expect(screen.getByText(/Só a documentação mudou: conferido/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Aplicar em stats.py…'));
+    expect(screen.getByText(/Gravar estas mudanças em stats.py\?/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Sim, gravar'));
+    await screen.findByText(/Nada foi commitado/);
+    expect(api.apply).toHaveBeenCalledWith('o1');
   });
 });

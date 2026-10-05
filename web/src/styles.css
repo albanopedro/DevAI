@@ -335,3 +335,30 @@ footer {
 .checked {
   color: var(--add-text);
 }
+
+/* EN | PT: two small buttons that read as one control. */
+.switch {
+  display: inline-flex;
+}
+
+.switch button {
+  border-radius: 0;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.switch button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.switch button:last-child {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.switch button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}

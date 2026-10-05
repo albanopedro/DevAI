@@ -8,8 +8,40 @@ dynamic = ["version"]
 description = "AI-powered developer assistant for code analysis, review, testing and software engineering automation."
 readme = "README.md"
 license = "MIT"
+authors = [{ name = "Pedro Albano" }]
 requires-python = ">=3.11"
 dependencies = ["pathspec>=0.12"]
+keywords = [
+    "code-review",
+    "developer-tools",
+    "static-analysis",
+    "ai",
+    "ollama",
+    "opencode",
+    "documentation",
+    "testing",
+    "github",
+]
+classifiers = [
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/albanopedro/DevAI"
+Repository = "https://github.com/albanopedro/DevAI"
+Issues = "https://github.com/albanopedro/DevAI/issues"
+Changelog = "https://github.com/albanopedro/DevAI/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # httpx2: what FastAPI's TestClient uses to call the app without a server.

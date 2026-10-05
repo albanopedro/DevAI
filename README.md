@@ -1,23 +1,67 @@
 # DevAI
 
 [![CI](https://github.com/albanopedro/DevAI/actions/workflows/ci.yml/badge.svg)](https://github.com/albanopedro/DevAI/actions/workflows/ci.yml)
+![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-3776ab)
+![License: MIT](https://img.shields.io/badge/license-MIT-2f6f5e)
+![AI: free models only](https://img.shields.io/badge/AI-free%20models%20only-2f6f5e)
 
-AI-powered developer assistant for code analysis, review, testing and software engineering automation.
+**A developer assistant that reviews, documents and tests your code with free AI models, and never acts without asking.**
 
-> **Status:** early development (Phase 10: GitHub integration).
+DevAI maps a project (languages, frameworks, dependencies, tests, configuration) and flags problems such as committed secrets or exposed `.env` files, without any AI. Then, only when you ask, a free AI model reviews your changes, proposes fixes, writes tests and docs, or plans GitHub issues. Every AI step shows exactly what would be sent before anything leaves your computer, and every change is a diff you approve.
 
-## Goal
+![Writing docs with AI in DevAI's web interface: find the gaps, see what would be sent, get the docstrings, confirm, done](docs/images/docs-with-ai.gif)
 
-DevAI analyzes a software project: it maps the structure, languages, frameworks, dependencies, tests and configuration, flags likely problems, and uses AI to interpret what it found.
+> **Status:** 1.0. Built in small, tested phases as a learning and portfolio project; every design decision is recorded in [docs/decisions.md](docs/decisions.md).
 
-It is a learning and portfolio project, and it grows in small, tested phases.
+## Quick start
 
-## Principles
+```bash
+git clone https://github.com/albanopedro/DevAI && cd DevAI
+python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[ai,web]"
+devai analyze examples/demo-project   # a small project with gaps on purpose
+```
 
-- **100% free, always.** DevAI uses no paid service, no paid API and no account of any kind. Its AI features use only free models: OpenCode's free models through your own OpenCode, or local models through Ollama. A model that could cost money is refused before anything runs.
-- **Deterministic first, AI second.** `devai analyze` works offline with no API key. AI is opt-in and only receives a structured, reviewable context.
-- **Privacy by default.** Honors `.gitignore`, never reads `.env` files, never prints secrets, and never sends code to an external API without explicit consent.
-- **User in control.** DevAI never applies code changes without showing a diff and asking for approval, and never commits or pushes.
+Then try `devai test examples/demo-project` and `devai docs examples/demo-project`, or open everything in your browser with `devai serve examples/demo-project` (see [Web interface](#web-interface)). The AI features need the free [OpenCode](https://opencode.ai) CLI or a local [Ollama](https://ollama.com).
+
+**On a Mac, just double-click `DevAI.command`.** The first time, it sets everything up (the Python environment and, if Node is installed, the web pages); then it asks which project to open and opens DevAI in your browser. Cancel opens the demo project.
+
+## What it does
+
+| Command | What it does | AI | Writes |
+|---|---|---|---|
+| `devai analyze` | Languages, frameworks, dependencies, tests and configuration; committed secrets, exposed `.env` files | optional | never |
+| `devai review` | Checks the changes you're about to commit: secrets, `.env` files, tests, debug leftovers, size | optional | never |
+| `devai chat` | Answers questions about the project, with the files you approve | yes | never |
+| `devai fix` | Proposes a fix for what you describe, as a diff | yes | after your `y` |
+| `devai test` | Where tests seem to be missing; writes a new test file | optional | a new file, after your `y` |
+| `devai docs` | Missing docstrings, JSDoc and README sections, and README commands that fail; writes them | optional | after your `y` |
+| `devai pr`, `devai issue` | Reviews GitHub pull requests without a checkout; plans issues | optional | one comment, after your `y` |
+| `devai serve` | All of the above in your browser, for this computer only | optional | after your confirmation |
+
+![The Overview tab of DevAI's web interface for the demo project](docs/images/overview.jpg)
+
+## Safe by design
+
+- **100% free, always.** No paid service, no paid API, no account. AI means OpenCode's free models through your own OpenCode CLI, or local models through Ollama; a model that could cost money is refused before anything runs.
+- **Deterministic first.** Analysis, review, the test and docs maps work offline, with no AI and no key. CI can fail on findings; the AI's opinion never decides that.
+- **Nothing leaves without a preview.** AI receives an allow-listed, size-capped context, with every line that may hold a secret replaced; `--dry-run` shows it exactly, and DevAI asks before sending. `.env` files are never read; `.gitignore` is honored.
+- **Every change is a diff you approve.** Writes need your `y` in a terminal (or a confirmation in the page), only touch committed, unchanged files, are atomic and undoable with `git restore`. Docs are proven docs-only: in Python, the syntax tree without docstrings must be identical.
+- **Never commits, pushes or merges.** Not in your project and not on GitHub: DevAI's `gh` calls go through an allow-list, and a comment is posted only after you read it.
+- **AI output is untrusted.** Code, issues and pull requests are data, never instructions; answers are checked against what the model was actually shown.
+- **Tested.** 900+ automated tests (Python and the web pages), run on Python 3.11–3.14 for every push; the CI also builds the Docker image and runs DevAI on itself. See [SECURITY.md](SECURITY.md) for the threat model.
+
+## How it works
+
+```mermaid
+flowchart TD
+    P[Your project] --> A[Analyzer]
+    A --> C[Checks] --> R["Report: text, JSON, web"]
+    A --> X["AI context: allow-listed,<br/>secrets redacted, capped"]
+    X --> Q{"You see it<br/>and say yes"}
+    Q -->|Send| M["Free model:<br/>OpenCode or Ollama"]
+    M --> V["DevAI checks the answer<br/>against what was sent"]
+    V --> D[Report or diff] --> Y{"Your y"} --> W["Atomic write,<br/>undoable"]
+```
 
 ## Installation
 
@@ -41,7 +85,9 @@ npm --prefix web ci && npm --prefix web run build  # once: build the pages (need
 devai serve ../my-project ../other-project         # opens http://127.0.0.1:8765/?token=...
 ```
 
+- **On a Mac, `DevAI.command` does all of this:** double-click it in Finder. It installs what's missing (again after an update), rebuilds the pages when their source changed, asks which project to open, picks a free port from 8765 on, and opens your browser. Close its window to stop DevAI. From a terminal: `./DevAI.command ../my-project`.
 - **For this computer only.** The server listens on 127.0.0.1. Every API call needs the token in the address it prints, a new one at every start. Requests from other sites (by their Origin) or under other host names (DNS rebinding) are refused, and the pages can open only the projects you named. The token leaves the address bar as soon as the page loads.
+- **English or Portuguese (Brazil):** the EN | PT switch in the header changes every text of the page at once; the first visit follows the browser's language, and the browser remembers your choice. Messages written by DevAI's checks and by the AI keep their own language; in Portuguese, the consent question is built by the page from the same facts.
 - **The tabs:** Overview (the analysis and its findings), Review (the current git changes), Tests and Docs (the maps, with a button per file to write tests or docs with AI, and one for the README), and Fix (describe a change, name up to 3 files). The chat stays in the terminal.
 - **AI in two clicks.** The first shows exactly what would be sent and where, the same context as `--dry-run`; nothing leaves until you press Send. The answer goes through the same checks as in the terminal. Pick the AI in the header: OpenCode's free model (online) or Ollama (this computer).
 - **Writing in two more:** the diff, then a confirmation. The page sends only the proposal's id, so what is written is what DevAI checked and kept, never text from the page. The checks of `--apply` run again right before writing (committed, unchanged files; new files never overwrite anything), and the page shows the undo command.
@@ -434,7 +480,7 @@ npm --prefix web test     # tests of the pages
 npm --prefix web run dev  # the pages with hot reload, next to a running `devai serve`
 ```
 
-CI (GitHub Actions) runs lint, format check and tests on Python 3.11–3.14, the pages' tests and build, and builds the Docker image and checks its locks, for every push to `main` and every pull request.
+CI (GitHub Actions) runs lint, format check and tests on Python 3.11–3.14, runs DevAI on itself (no HIGH finding, no README command that fails), runs the pages' tests and build, and builds the Docker image and checks its locks, for every push to `main` and every pull request.
 
 Project layout:
 
@@ -527,9 +573,13 @@ tests/
 web/                  # the pages: React + Vite (npm run build → web/dist)
 ├── src/App.jsx            # projects, tabs, AI provider, the undo notice
 ├── src/api.js             # the API client: the token, from the address to the header
+├── src/i18n.js            # English and Portuguese texts, the EN | PT switch's memory
 ├── src/components/AiTask.jsx  # preview → Send → answer → confirm → written
 └── src/views/             # Overview, Review, Tests, Docs, Fix
+DevAI.command            # the macOS launcher: setup, project picker, browser
 Dockerfile, compose.yaml  # the container: pages built with Node, DevAI with [ai,web]
+examples/demo-project/    # a fictitious project with gaps on purpose, to try every command
+docs/images/              # README images, captured from the demo project
 ```
 
 ## Roadmap
@@ -560,6 +610,7 @@ Dockerfile, compose.yaml  # the container: pages built with Node, DevAI with [ai
 | 8c | AI README | `devai docs --readme --ai`: missing README sections written by a free AI and added without editing a line, with every command checked against the project |
 | 9 | Web Interface | `devai serve`: a local API (FastAPI; 127.0.0.1, token, Host and Origin checks), React pages, AI tasks with a preview before sending and a confirmation before writing, Docker |
 | 10 | GitHub Integration | `devai pr`, `devai issue`, through the `gh` CLI: pull requests reviewed without a checkout, issue plans, comments posted only after your "y"; never merges, closes or creates anything |
+| 1.0 | Release | README showcase, demo project, SECURITY.md, CHANGELOG, DevAI checking itself in CI |
 | 11 | Agent System | Only if a real need appears |
 
 The roadmap changes as the project teaches us things. Design decisions are recorded in [docs/decisions.md](docs/decisions.md).
