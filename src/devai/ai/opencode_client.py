@@ -6,7 +6,11 @@ locked down so the model sees only the AI context (D025):
 
 - an inline config (OPENCODE_CONFIG_CONTENT) defines a `devai` agent with
   DevAI's system prompt and every permission denied: no files, no commands;
-- the run happens in an empty temporary directory, deleted afterwards;
+- the run happens in an empty temporary directory, deleted afterwards. OpenCode 2
+  takes the directory from the process, so it is the working directory of the call;
+- `--standalone` gives the run a private server that inherits that inline config
+  and directory. Without it OpenCode 2 would use its long-lived background
+  service, which would never see the config: the `devai` agent would not exist;
 - the task (analysis, review) supplies the prompt and the answer model
   through an AIRequest (D037); this module only transports it;
 - only free `opencode/...` models are accepted (settings.py), and a run that
@@ -66,14 +70,13 @@ class OpenCodeClient:
             command = [
                 executable,
                 "run",
+                "--standalone",
                 "--model",
                 self.settings.model,
                 "--agent",
                 AGENT_NAME,
                 "--format",
                 "json",
-                "--dir",
-                empty_dir,
                 "--title",
                 request.title,
                 message,
@@ -81,6 +84,7 @@ class OpenCodeClient:
             try:
                 completed = subprocess.run(
                     command,
+                    cwd=empty_dir,
                     env=env,
                     capture_output=True,
                     text=True,
@@ -179,6 +183,11 @@ def strip_code_fence(text: str) -> str:
 def explain_failure(output: str) -> str:
     """A short, user-facing reason for a failed run."""
     lowered = output.lower()
+    if "unrecognized flag" in lowered:
+        return (
+            "This OpenCode is too old: DevAI needs OpenCode 2 or newer "
+            "(brew upgrade opencode), or use --provider ollama."
+        )
     if "freetiererror" in lowered or "free tier" in lowered:
         return (
             "OpenCode's free tier refused this request. Try another free model "

@@ -2,6 +2,11 @@
 
 All notable changes to DevAI. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/). Design decisions are numbered in [docs/decisions.md](docs/decisions.md).
 
+## [Unreleased]
+
+### Fixed
+- The `opencode` provider works with OpenCode 2: `opencode run` no longer accepts `--dir`, so the empty temporary directory is now the working directory of the call, and `--standalone` gives the run its own server, which is the only place the `devai` agent (with every permission denied) exists. An OpenCode that is too old gets a clear message that points to OpenCode 2 or `--provider ollama`.
+
 ## [1.0.0] - 2026-10-05
 
 The first release: every phase of the roadmap, built between 2026-09-29 and 2026-10-05.

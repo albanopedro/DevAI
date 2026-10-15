@@ -22,12 +22,12 @@ FAKE_OPENCODE = """\
 import json, os, sys, time
 spec = json.load(open(os.environ["FAKE_OPENCODE_SPEC"]))
 args = sys.argv[1:]
-work_dir = args[args.index("--dir") + 1]
 with open(os.environ["FAKE_OPENCODE_LOG"], "w") as log:
     json.dump({
         "args": args,
         "config": os.environ.get("OPENCODE_CONFIG_CONTENT"),
-        "dir_was_empty": os.listdir(work_dir) == [],
+        "work_dir": os.getcwd(),
+        "dir_was_empty": os.listdir(".") == [],
     }, log)
 time.sleep(spec.get("sleep", 0))
 sys.stdout.write(spec.get("stdout", ""))
@@ -98,6 +98,14 @@ def test_runs_the_free_model_with_the_devai_agent(opencode):
     assert args[args.index("--title") + 1] == "DevAI analysis"
 
 
+def test_runs_with_a_private_server(opencode):
+    # OpenCode 2's background service never sees our inline config, so the
+    # `devai` agent would not exist there: the run needs its own server.
+    client_for(opencode).complete(REQUEST)
+
+    assert "--standalone" in opencode.call["args"]
+
+
 def test_sends_only_the_context_and_the_schema(opencode):
     client_for(opencode).complete(REQUEST)
 
@@ -120,10 +128,18 @@ def test_every_permission_is_denied(opencode):
 def test_runs_in_an_empty_directory_that_is_removed(opencode):
     client_for(opencode).complete(REQUEST)
 
-    args = opencode.call["args"]
-    work_dir = args[args.index("--dir") + 1]
+    work_dir = opencode.call["work_dir"]
     assert opencode.call["dir_was_empty"] is True
+    assert os.path.realpath(work_dir) != os.path.realpath(os.getcwd())
+    assert os.path.basename(work_dir).startswith("devai-opencode-")
     assert not os.path.exists(work_dir)  # deleted after the run
+
+
+def test_the_directory_is_the_working_directory_not_a_flag(opencode):
+    # OpenCode 2 removed `--dir`: it rejects the flag and exits with an error.
+    client_for(opencode).complete(REQUEST)
+
+    assert "--dir" not in opencode.call["args"]
 
 
 # --- reading the answer ------------------------------------------------------
@@ -191,6 +207,16 @@ def test_free_tier_refusal(opencode):
     )
 
     with pytest.raises(AIError, match="free tier refused.*--provider ollama"):
+        client_for(opencode).complete(REQUEST)
+
+
+def test_an_opencode_that_is_too_old(opencode):
+    opencode.reply(
+        stderr="ERROR\n  Unrecognized flag: --standalone in command opencode run\n",
+        exit=1,
+    )
+
+    with pytest.raises(AIError, match="too old.*OpenCode 2.*--provider ollama"):
         client_for(opencode).complete(REQUEST)
 
 

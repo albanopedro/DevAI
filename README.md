@@ -430,7 +430,7 @@ DevAI only reads git: it never stages, commits or pushes. The tests the AI sugge
 
 | Provider | How | Needs | Data |
 |---|---|---|---|
-| `opencode` (default) | Runs your own [OpenCode](https://opencode.ai) CLI with a free model (`opencode/space-bunny-free`) | `opencode` installed | The summary goes to OpenCode's free service |
+| `opencode` (default) | Runs your own [OpenCode](https://opencode.ai) CLI with a free model (`opencode/space-bunny-free`) | OpenCode 2 or newer installed | The summary goes to OpenCode's free service |
 | `ollama` | Calls a model on your computer through [Ollama](https://ollama.com) (`qwen3.5:9b`) | Ollama running, model pulled | Stays on your machine |
 
 ```bash
